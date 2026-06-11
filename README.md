@@ -36,7 +36,7 @@ Randomize by connected mesh, UV island, material, sharp edge, face angle, vertex
 Move data between images, vertex colors, vertex groups, and mesh objects for practical production workflows.
 
 ## 🚀 Quick Start
-
+![Uploading 切换图层和预览单通道(1).gif…]()
 1. Install or load the add-on in Blender.
 2. Open the 3D Viewport sidebar with `N`.
 3. Find the `YL VertexColForge` panel.
