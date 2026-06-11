@@ -1,12 +1,12 @@
 # YL VertexColForge
 
-**🎨 Forge vertex colors faster in Blender.**
+** Forge vertex colors faster in Blender.**
 
 YL VertexColForge is a focused Blender add-on for artists who want vertex color work to feel fast, visual, and controllable. It brings brush painting, gradients, color selection, channel blending, light/AO baking, color adjustment, randomization, and transfer tools into one practical workspace.
 
 No more jumping between scattered operators just to build a mask, fix a channel, preview alpha, or move color data from one place to another. VertexColForge turns vertex color editing into a direct creative workflow: choose the layer, choose the channel, preview the result, and forge the color data you need.
 
-## ✨ Highlights
+##  Highlights
 
 🖌️ **Paint, fill, and sample**  
 Paint vertex colors, fill selections, swap foreground/background colors, and pick colors directly from the mesh.
@@ -35,7 +35,7 @@ Move data between images, vertex colors, vertex groups, and mesh objects for pra
 👁️ **Live viewport preview**  
 Preview color attributes from Object Mode and Edit Mode, including individual RGBA channels and alpha data.
 
-## 🚀 Quick Start
+##  Quick Start
 
 1. Install or load the add-on in Blender.
 2. Open the 3D Viewport sidebar with `N`.
@@ -115,7 +115,7 @@ This is the bridge between texture data, weight data, mesh attributes, and Blend
 
 <!-- GIF: docs/gifs/09-transfer-workflows.gif -->
 
-## 📦 Installation
+##  Installation
 
 1. Download the extension package or clone this repository.
 2. In Blender, open `Edit > Preferences > Extensions`.
@@ -123,7 +123,7 @@ This is the bridge between texture data, weight data, mesh attributes, and Blend
 4. Enable `YL VertexColForge`.
 5. Open the `YL VertexColForge` panel in the 3D Viewport sidebar.
 
-## 📄 License
+##  License
 
 The Python add-on code is licensed under `GPL-3.0-or-later`.
 
