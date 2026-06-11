@@ -43,7 +43,7 @@ Preview color attributes from Object Mode and Edit Mode, including individual RG
 4. Pick a color attribute and write channel.
 5. Work through the tool tabs from left to right: Brush, Gradient, Select, Channel Blend, Light and AO, Color Adjust, Random, and Color Transfer.
 
-## 👁️ Attribute Control And Viewport Preview
+##  Attribute Control And Viewport Preview
 
 VertexColForge starts where every vertex color workflow starts: color attributes and visibility. Create, rename, remove, or convert color layers, then choose exactly which channel you want to write and preview.
 
