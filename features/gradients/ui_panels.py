@@ -2,8 +2,9 @@
 import bpy
 
 from .core_color_engine import find_adjust_ramp_node, find_light_ramp_node, find_ramp_node
+from ...services import display
 from ...i18n import tr, tr_format
-from ...ui.common import draw_missing, draw_requires, section_body
+from ...ui.common import draw_missing, draw_requires, draw_unavailable, section_body
 
 PANEL_CATEGORY = "YL VertexColForge"
 
@@ -27,6 +28,14 @@ def _get_mesh_context(context):
 def _has_active_color_attr(context):
     _, _, active_color_attr = _get_mesh_context(context)
     return active_color_attr is not None
+
+
+def _is_gradient_tool_active(context):
+    return getattr(context.scene, "ylvc_ui_section", "") == "GRADIENT"
+
+
+def _is_viewport_gradient_enabled(context, obj):
+    return _is_gradient_tool_active(context) and display.is_plugin_preview_enabled(obj)
 
 
 def _draw_ramp_controls(layout, context, show_blend=True):
@@ -143,14 +152,25 @@ class IMAGE_EDITOR_PT_YLVC_Gradient(bpy.types.Panel):
         obj, mesh, active_color_attr = _get_mesh_context(context)
         content = section_body(layout)
 
-        _draw_ramp_controls(content, context)
+        viewport_gradient_enabled = _is_viewport_gradient_enabled(context, obj)
+        gradient_controls = content.column()
+        gradient_controls.enabled = viewport_gradient_enabled
+        _draw_ramp_controls(gradient_controls, context)
 
         if not mesh.uv_layers.active:
             draw_missing(content, "active UV map")
+        if not display.is_plugin_preview_enabled(obj):
+            draw_unavailable(content, "viewport preview")
+        elif not _is_gradient_tool_active(context):
+            draw_unavailable(content, "Viewport Gradient tool")
 
         row_action = content.row(align=True)
         row_action.scale_y = 1.5
-        row_action.enabled = mesh.uv_layers.active is not None and active_color_attr.domain == "CORNER"
+        row_action.enabled = (
+            viewport_gradient_enabled
+            and mesh.uv_layers.active is not None
+            and active_color_attr.domain == "CORNER"
+        )
         row_action.operator(
             "image.ylvc_test_gradient",
             text=tr_format("Draw {channel_key} Gradient", channel_key=scene.ylvc_channel),

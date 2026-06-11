@@ -76,7 +76,16 @@ class IMAGE_EDITOR_OT_YLVCTestGradient(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-        return context.area is not None and context.area.type == "IMAGE_EDITOR" and obj is not None and obj.type == "MESH"
+        scene = getattr(context, "scene", None)
+        return (
+            context.area is not None
+            and context.area.type == "IMAGE_EDITOR"
+            and obj is not None
+            and obj.type == "MESH"
+            and scene is not None
+            and getattr(scene, "ylvc_ui_section", "") == "GRADIENT"
+            and display.is_plugin_preview_enabled(obj)
+        )
 
     def invoke(self, context, event):
         if context.area.type != "IMAGE_EDITOR":
@@ -86,6 +95,14 @@ class IMAGE_EDITOR_OT_YLVCTestGradient(bpy.types.Operator):
         obj = context.active_object
         if obj is None or obj.type != "MESH":
             self.report({"WARNING"}, tr("Active object must be a mesh."))
+            return {"CANCELLED"}
+
+        if getattr(context.scene, "ylvc_ui_section", "") != "GRADIENT":
+            self.report({"WARNING"}, tr("Enable the Viewport Gradient tool first."))
+            return {"CANCELLED"}
+
+        if not display.is_plugin_preview_enabled(obj):
+            self.report({"WARNING"}, tr("Enable Viewport Preview first."))
             return {"CANCELLED"}
 
         ramp_node = ensure_ramp_node()
