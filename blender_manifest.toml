@@ -6,6 +6,7 @@ name = "YL VertexColForge"
 tagline = "Vertex color write, preview, gradient, mirror, random fill"
 maintainer = "YLIANG"
 type = "add-on"
+website = "https://github.com/YLIANG021/YL-VertexColForge"
 
 license = ["SPDX:GPL-3.0-or-later", "SPDX:CC0-1.0"]
 blender_version_min = "5.0.0"
