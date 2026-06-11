@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.tmp
+*.bak
+*.log
+*.blend[0-9]
+
+.DS_Store
+Thumbs.db
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
