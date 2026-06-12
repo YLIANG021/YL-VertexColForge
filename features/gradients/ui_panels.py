@@ -4,7 +4,7 @@ import bpy
 from .core_color_engine import find_adjust_ramp_node, find_light_ramp_node, find_ramp_node
 from ...services import display
 from ...i18n import tr, tr_format
-from ...ui.common import draw_missing, draw_requires, draw_unavailable, section_body
+from ...ui.common import draw_hint, draw_missing, draw_requires, section_body
 
 PANEL_CATEGORY = "YL VertexColForge"
 
@@ -160,9 +160,9 @@ class IMAGE_EDITOR_PT_YLVC_Gradient(bpy.types.Panel):
         if not mesh.uv_layers.active:
             draw_missing(content, "active UV map")
         if not display.is_plugin_preview_enabled(obj):
-            draw_unavailable(content, "viewport preview")
+            draw_hint(content, "Enable Viewport Preview first.")
         elif not _is_gradient_tool_active(context):
-            draw_unavailable(content, "Viewport Gradient tool")
+            draw_hint(content, "Enable Viewport Gradient first.")
 
         row_action = content.row(align=True)
         row_action.scale_y = 1.5

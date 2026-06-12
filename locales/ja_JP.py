@@ -146,6 +146,8 @@ data = {
     ('*', 'Draw {channel_key} Gradient'): '{channel_key} グラデーションを描画',
     ('*', 'Edit Color Attribute'): 'カラー属性を編集',
     ('*', 'Enable Viewport Preview'): 'ビューポートプレビューを有効化',
+    ('*', 'Enable Viewport Gradient first.'): '先にビューポートグラデーションを有効化',
+    ('*', 'Enable Viewport Preview first.'): '先にプレビューを有効化',
     ('*', 'F: Size, Shift+F: Hardness'): 'F: サイズ、Shift+F: 硬さ',
     ('*', 'Face angle threshold used to separate angle islands'): '角度アイランドを分離するために使う面の角度しきい値',
     ('*', 'Face Corner'): 'フェイスコーナー',

@@ -238,7 +238,7 @@ def ensure_ao_color_attribute(mesh, name="AO"):
     return color_attr
 
 
-def apply_ramp_to_color_attribute(color_attr, channel_key="RGB", base_colors=None):
+def apply_ramp_to_color_attribute(color_attr, channel_key="RGB", base_colors=None, blend_mode=None):
     ramp_node = ensure_light_ramp_node()
     if ramp_node is None or not getattr(ramp_node, "color_ramp", None):
         return False
@@ -257,7 +257,8 @@ def apply_ramp_to_color_attribute(color_attr, channel_key="RGB", base_colors=Non
     if base_colors is not None:
         np.copyto(colors, base_colors)
 
-    blend_mode = getattr(bpy.context.scene, "ylvc_light_blend_mode", "REPLACE")
+    if blend_mode is None:
+        blend_mode = getattr(bpy.context.scene, "ylvc_light_blend_mode", "REPLACE")
     blend_source_values_into_colors(colors, mapped, channel_key, blend_mode, None)
     write_color_array_to_attribute(color_attr, colors)
     return True
@@ -277,7 +278,7 @@ def apply_selection_mask_to_point_attribute(mesh, color_attr, original_colors):
     return True
 
 
-def bake_point_attribute_to_corner_attribute(mesh, source_attr, target_attr, channel_key="RGB"):
+def bake_point_attribute_to_corner_attribute(mesh, source_attr, target_attr, channel_key="RGB", blend_mode="REPLACE"):
     if source_attr is None or target_attr is None:
         return False
     if source_attr.domain != "POINT" or target_attr.domain != "CORNER":
@@ -289,7 +290,7 @@ def bake_point_attribute_to_corner_attribute(mesh, source_attr, target_attr, cha
     target_colors = read_color_attribute_colors(mesh, target_attr)
 
     loop_mask = resolve_loop_auto_mask_for_object(bpy.context.active_object, loop_vi, use_live_edit=False)
-    blend_source_values_into_colors(target_colors, corner_colors, channel_key, "REPLACE", loop_mask)
+    blend_source_values_into_colors(target_colors, corner_colors, channel_key, blend_mode, loop_mask)
     write_color_array_to_attribute(target_attr, target_colors, update_mesh=False)
     return True
 
@@ -716,10 +717,12 @@ class MESH_OT_VCM_BakeAO_GPU(bpy.types.Operator):
                 # Bake AO and remap the result through the shared ramp.
                 # Blender baking is exposed through operators, not a complete data API.
                 bpy.ops.object.bake(type="AO")
-                apply_ramp_to_color_attribute(color_attr, channel_key, original_point_colors)
+                blend_mode = getattr(scene, "ylvc_light_blend_mode", "REPLACE")
+                ramp_blend_mode = "REPLACE" if temp_point_attr is not None else blend_mode
+                apply_ramp_to_color_attribute(color_attr, channel_key, original_point_colors, ramp_blend_mode)
                 apply_selection_mask_to_point_attribute(mesh, color_attr, original_point_colors)
                 if temp_point_attr is not None:
-                    bake_point_attribute_to_corner_attribute(mesh, temp_point_attr, original_attr, channel_key)
+                    bake_point_attribute_to_corner_attribute(mesh, temp_point_attr, original_attr, channel_key, blend_mode)
 
             except Exception as e:
                 self.report({"ERROR"}, tr_format("AO bake failed: {message}", message=str(e)))

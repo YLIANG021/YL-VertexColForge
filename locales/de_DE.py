@@ -146,6 +146,8 @@ data = {
     ('*', 'Draw {channel_key} Gradient'): '{channel_key}-Verlauf zeichnen',
     ('*', 'Edit Color Attribute'): 'Farbattribut bearbeiten',
     ('*', 'Enable Viewport Preview'): 'Viewport-Vorschau an',
+    ('*', 'Enable Viewport Gradient first.'): 'Zuerst Viewport-Verlauf aktivieren.',
+    ('*', 'Enable Viewport Preview first.'): 'Zuerst Vorschau aktivieren.',
     ('*', 'F: Size, Shift+F: Hardness'): 'F: Größe, Shift+F: Härte',
     ('*', 'Face angle threshold used to separate angle islands'): 'Flächenwinkel-Schwelle zum Trennen von Winkelinseln',
     ('*', 'Face Corner'): 'Flächenecke',

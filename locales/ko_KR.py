@@ -146,6 +146,8 @@ data = {
     ('*', 'Draw {channel_key} Gradient'): '{channel_key} 그라디언트 그리기',
     ('*', 'Edit Color Attribute'): '컬러 속성 편집',
     ('*', 'Enable Viewport Preview'): '뷰포트 미리보기 활성화',
+    ('*', 'Enable Viewport Gradient first.'): '먼저 뷰포트 그라디언트를 켜세요.',
+    ('*', 'Enable Viewport Preview first.'): '먼저 미리보기를 켜세요.',
     ('*', 'F: Size, Shift+F: Hardness'): 'F: 크기, Shift+F: 경도',
     ('*', 'Face angle threshold used to separate angle islands'): '각도 아일랜드를 분리하는 데 사용할 면 각도 임계값',
     ('*', 'Face Corner'): '페이스 코너',

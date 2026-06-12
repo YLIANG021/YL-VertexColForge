@@ -98,7 +98,7 @@ class IMAGE_EDITOR_OT_YLVCTestGradient(bpy.types.Operator):
             return {"CANCELLED"}
 
         if getattr(context.scene, "ylvc_ui_section", "") != "GRADIENT":
-            self.report({"WARNING"}, tr("Enable the Viewport Gradient tool first."))
+            self.report({"WARNING"}, tr("Enable Viewport Gradient first."))
             return {"CANCELLED"}
 
         if not display.is_plugin_preview_enabled(obj):

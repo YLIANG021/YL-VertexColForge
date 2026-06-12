@@ -146,6 +146,8 @@ data = {
     ('*', 'Draw {channel_key} Gradient'): 'Dibujar degradado {channel_key}',
     ('*', 'Edit Color Attribute'): 'Editar atributo de color',
     ('*', 'Enable Viewport Preview'): 'Activar vista previa del visor',
+    ('*', 'Enable Viewport Gradient first.'): 'Activa primero el degradado del visor.',
+    ('*', 'Enable Viewport Preview first.'): 'Activa primero la vista previa.',
     ('*', 'F: Size, Shift+F: Hardness'): 'F: tamaño, Shift+F: dureza',
     ('*', 'Face angle threshold used to separate angle islands'): 'Umbral de ángulo de cara usado para separar islas por ángulo',
     ('*', 'Face Corner'): 'Esquina de cara',

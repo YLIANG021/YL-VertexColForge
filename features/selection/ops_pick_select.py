@@ -16,7 +16,7 @@ from ...core.operator_poll import active_mesh_has_color_attributes
 from ...i18n import tr
 from ...services import transactions
 from . import overlay
-from .ops_fill_select import build_corner_vertex_match_mask
+from .ops_fill_select import build_color_match_mask, build_corner_vertex_match_mask, clear_edge_face_selection
 
 PICK_SELECT_START_TOLERANCE = 0.0
 PICK_SELECT_ZERO_SNAP_RADIUS = 10.0
@@ -357,21 +357,13 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
         if not self._preview_cache_ready or self._picked_value is None:
             return np.zeros(0, dtype=bool)
 
-        colors = self._preview_colors
         tolerance = self._current_tolerance
-        channel_indices = self._preview_channel_indices
-        is_color = isinstance(self._picked_value, (list, tuple))
-
-        if is_color:
-            target_arr = np.array(
-                self._picked_value if len(self._picked_value) == 4 else [self._picked_value[0], self._picked_value[1], self._picked_value[2], 1.0],
-                dtype=np.float32,
-            )
-            diff = np.abs(colors[:, channel_indices] - target_arr[channel_indices])
-            match_mask = np.all(diff <= tolerance, axis=1)
-        else:
-            sampled = np.mean(colors[:, channel_indices], axis=1)
-            match_mask = np.abs(sampled - float(self._picked_value)) <= tolerance
+        match_mask = build_color_match_mask(
+            self._preview_colors,
+            self._picked_value,
+            self._preview_channel_indices,
+            tolerance,
+        )
 
         if self._preview_domain == "POINT":
             return match_mask
@@ -410,12 +402,8 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
             vertex_mask = self._compute_vertex_mask()
             self._current_vertex_mask = vertex_mask
 
-        edge_mask = np.zeros(len(obj.data.edges), dtype=bool)
-        face_mask = np.zeros(len(obj.data.polygons), dtype=bool)
-
         obj.data.vertices.foreach_set("select", vertex_mask)
-        obj.data.edges.foreach_set("select", edge_mask)
-        obj.data.polygons.foreach_set("select", face_mask)
+        clear_edge_face_selection(obj.data)
         obj.data.update()
 
         try:

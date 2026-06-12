@@ -146,6 +146,8 @@ data = {
     ('*', 'Draw {channel_key} Gradient'): 'Draw {channel_key} Gradient',
     ('*', 'Edit Color Attribute'): 'Edit Color Attribute',
     ('*', 'Enable Viewport Preview'): 'Enable Viewport Preview',
+    ('*', 'Enable Viewport Gradient first.'): 'Enable Viewport Gradient first.',
+    ('*', 'Enable Viewport Preview first.'): 'Enable Viewport Preview first.',
     ('*', 'F: Size, Shift+F: Hardness'): 'F: Size, Shift+F: Hardness',
     ('*', 'Face angle threshold used to separate angle islands'): 'Face angle threshold used to separate angle islands',
     ('*', 'Face Corner'): 'Face Corner',
