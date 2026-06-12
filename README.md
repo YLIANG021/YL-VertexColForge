@@ -1,136 +1,69 @@
 # YL VertexColForge
 
-**🎨 Forge vertex colors faster in Blender.**
+**一个面向 Blender 5.x 的全能顶点色/颜色属性工作站。**
 
-YL VertexColForge is a focused Blender add-on for artists who want vertex color work to feel fast, visual, and controllable. It brings channel switching, live preview, brush painting, gradients, color selection, channel blending, light/AO baking, color adjustment, randomization, and transfer tools into one practical workspace.
+![主宣传图/界面概览](请在此处替换_你的主宣传图或概览动图.gif)
 
-No more jumping between scattered operators just to build a mask, fix a channel, preview alpha, or move color data from one place to another. VertexColForge turns vertex color editing into a direct creative workflow: choose the layer, choose the channel, preview the result, and forge the color data you need.
+YL VertexColForge 彻底改变了 Blender 中的颜色属性（Color Attribute）编辑体验。它不仅仅是一个顶点绘制工具，而是专为游戏资产制作、风格化渲染和技术美术打造的“通道级”遮罩与颜色处理中心。无论是打包 RGBA Mask、烘焙曲率与光照，还是传递数据，都在一个直观的面板中一站式完成。
 
-## ✨ Highlights
+---
 
-👁️ **Channel switching and color preview**  
-Switch write channels quickly and preview color attributes from Object Mode or Edit Mode, including individual RGBA channels and alpha data.
+## 🌐 多语言支持
+原生支持 13 种界面语言：简体中文、繁体中文、英语、日语、韩语、德语、法语、西班牙语、意大利语、波兰语、葡萄牙语、俄语和越南语。
 
-🖌️ **Paint and fill**  
-Paint vertex colors, fill selections, swap foreground/background colors, and pick colors directly from the mesh.
+---
 
-🌈 **Viewport gradients**  
-Draw ColorRamp-driven gradients in the 3D Viewport or UV/Image Editor for masks, stylized ramps, and controlled color transitions.
+## ✨ 核心特性
 
-🎯 **Color selection**  
-Sample existing vertex colors and turn matching values back into editable mesh selections.
+### 1. 👁️ 所见即所得通道预览
+突破默认视图限制，无需节点连线，直接查看 RGB、Alpha 或任意单独通道。
+<img width="442" height="320" alt="切换图层和预览单通道" src="https://github.com/user-attachments/assets/6470ee15-fcf3-4cd2-b11b-ccd015278fc8" />
 
-🎭 **Channel blending**  
-Copy, blend, mirror, preview, or write into R, G, B, A, or full color data with RGBA-aware controls.
+### 2. 🌈 任意方向视口渐变
+使用 ColorRamp 在 3D 视图中直接拖拽绘制多色线性或径向渐变，并实时预览写入结果。
+![演示：屏幕渐变](请在此处替换_屏幕渐变.gif)
 
-💡 **Light and AO baking**  
-Bake ambient occlusion, directional lighting, gradient masks, and curvature-style detail into editable vertex color attributes.
+### 3. 🗺️ 实时 UV 渐变
+直接在 UV/Image Editor 中沿 UV 岛方向创建渐变遮罩，完美契合贴图空间的工作流。
 
-🧪 **Color adjustment lab**  
-Refine vertex colors with levels, gamma, HSV, invert, smooth blur, and ColorRamp remapping before applying.
+### 4. 🎨 笔刷、填充和吸管工具
+所有工具均支持精准限制在特定通道。快速铺色、修补遮罩和拾取颜色，互不干扰。
+![演示：笔刷和填充](请在此处替换_笔刷和填充.gif)
 
-🎲 **Randomized colors with structure**  
-Randomize by connected mesh, UV island, material, sharp edge, face angle, vertex group, face, or vertex.
+### 5. ⚡ 快速颜色选择
+在视口中点击可见颜色，拖动鼠标即可调整容差并实时查看选择范围，高效隔离需要编辑的区域。
+![演示：选择](请在此处替换_选择.gif)
 
-🔁 **Color transfer workflows**  
-Move data between images, vertex colors, vertex groups, and mesh objects for practical production workflows.
+### 6. 🪞 一键颜色镜像
+在视口中点一下即可完成镜像，系统会自动判断，不必再繁琐地手动选择轴向或正负方向。支持通道复制。
+![演示：镜像与通道复制](请在此处替换_镜像与通道复制.gif)
 
-## 🚀 Quick Start
-<img width="884" height="640" alt="切换图层和预览单通道(1)" src="https://github.com/user-attachments/assets/18c31234-240c-4791-8528-e86ebcd99dd0" />
+### 7. 💡 AO、方向光和曲率遮罩
+一键烘焙几何与光照信息，生成到可编辑的颜色属性中，为风格化贴图奠定明暗基础。
+![演示：Light AO](请在此处替换_LightAO.gif)
 
+### 8. 🧪 实时颜色调整
+非破坏性预览色阶（Levels）、伽马、HSV、反转、平滑模糊和 Ramp 重映射，确认效果完美后再点击应用。
+![演示：ADJUST调整](请在此处替换_ADJUST.gif)
 
-1. Install or load the add-on in Blender.
-2. Open the 3D Viewport sidebar with `N`.
-3. Find the `YL VertexColForge` panel.
-4. Pick a color attribute and write channel.
-5. Work through the tool tabs from left to right: Brush, Gradient, Select, Channel Blend, Light and AO, Color Adjust, Random, and Color Transfer.
+### 9. 🎲 结构化随机颜色
+支持按连接网格、UV 岛、材质、锐边、角度、顶点组、面或顶点生成随机颜色，制作 ID Map 的最快途径。
+![演示：随机颜色](请在此处替换_随机颜色.gif)
 
-## 🧭 Feature Walkthrough
+### 10. 🔁 贴图、权重和物体传递
+轻松在图像（Texture）、顶点组（Vertex Group）和具有不同拓扑的网格对象（Mesh）之间双向移动颜色数据。
 
-The sections below follow the same left-to-right rhythm as the add-on: channel switching and preview first, then Brush, Gradient, Select, Channel Blend, Light and AO, Color Adjust, Random, and Color Transfer.
+---
 
-### 👁️ Channel Switching And Color Preview
+## 📦 安装指南
 
-VertexColForge starts where every vertex color workflow starts: color attributes, write channels, and visibility. Create, rename, remove, or convert color layers, then choose exactly which channel you want to write and preview.
+1. 确保使用的是 **Blender 5.0** 或更高版本。
+2. 下载扩展包 `.zip`，或克隆此仓库。
+3. 在 Blender 中打开 `编辑 (Edit) > 偏好设置 (Preferences) > 扩展 (Extensions)`。
+4. 从磁盘安装该插件并启用 `YL VertexColForge`。
+5. 在 3D 视图中选中一个网格，按 `N` 打开侧边栏，即可在 `YL VertexColForge` 面板开始创作。
 
-The viewport preview is built for fast iteration. Isolate RGB, alpha, or a single channel, inspect masks directly on the model, and stop guessing what your color attribute actually contains.
+## 📄 许可证
 
-<!-- GIF: docs/gifs/01-channel-preview.gif -->
-
-### 🖌️ Brush
-
-Use foreground/background color controls, strength, blend mode, eyedropper sampling, and selection fill tools to paint or block vertex colors quickly. When a color is worth keeping, add it to the shared preset palette and reuse it across tools.
-
-This is the fast lane for broad color blocking, selected-area fills, mask cleanup, and small hand-painted fixes.
-
-<!-- GIF: docs/gifs/02-brush-fill-presets.gif -->
-
-### 🌈 Gradient
-
-Draw gradients directly in the 3D Viewport or in UV space. Because the system is ColorRamp-driven, gradients can be soft, sharp, multi-stop, stylized, or mask-like instead of being limited to a simple two-color fade.
-
-Use screen gradients when the result should follow the model from the current view. Use UV gradients when the result should follow layout space.
-
-<!-- GIF: docs/gifs/03-screen-uv-gradients.gif -->
-
-### 🎯 Select
-
-Pick a color from the mesh, set a tolerance, and select matching elements. This makes existing vertex color data editable again, not just something hidden inside an attribute.
-
-Use it to isolate painted regions, clean up masks, select ID areas, or turn color information back into mesh selections.
-
-<!-- GIF: docs/gifs/04-pick-select-color.gif -->
-
-### 🎭 Channel Blend
-
-Vertex color channels often behave like production masks. VertexColForge lets you mirror a channel across symmetrical geometry, copy channel data, and blend operations instead of overwriting everything blindly.
-
-Repair one side of a model, reuse a mask, push alpha into another channel, or build layered control data without leaving Blender.
-
-<!-- GIF: docs/gifs/05-channel-tools.gif -->
-
-### 💡 Light And AO
-
-Turn useful surface information into editable vertex color data. Bake ambient occlusion for contact depth, directional lighting for light-facing masks, gradient lighting passes, or curvature-style information for edge and cavity emphasis.
-
-Perfect for stylized assets, game-ready meshes, procedural material masks, and hand-painted workflows that need more surface intelligence baked into the color attribute.
-
-<!-- GIF: docs/gifs/06-light-ao-curvature.gif -->
-
-### 🧪 Color Adjust
-
-After the data is written, shape it. Adjust black and white levels, gamma, hue, saturation, value, inversion, smooth blur, and ColorRamp remapping in a preview session before applying the final result.
-
-Use it to tighten masks, rescue bakes, soften noisy colors, push contrast, or recolor a gradient without rebuilding the whole setup.
-
-<!-- GIF: docs/gifs/07-color-adjust-ramp-remap.gif -->
-
-### 🎲 Random
-
-Randomization is useful when it follows the model. VertexColForge can randomize colors by connected geometry, UV island, material slot, sharp-edge island, angle island, vertex group, face, or vertex.
-
-Use it for ID maps, stylized breakup, modular asset variation, material masks, quick look development, or controlled chaos that still respects the mesh.
-
-<!-- GIF: docs/gifs/08-randomize-colors.gif -->
-
-### 🔁 Color Transfer
-
-Move color data where production needs it. Sample an image into vertex colors, bake vertex colors back to an image, convert between vertex colors and vertex groups, or transfer color attributes between mesh objects.
-
-This is the bridge between texture data, weight data, mesh attributes, and Blender's color attribute system.
-
-<!-- GIF: docs/gifs/09-transfer-workflows.gif -->
-
-## 📦 Installation
-
-1. Download the extension package or clone this repository.
-2. In Blender, open `Edit > Preferences > Extensions`.
-3. Install or load the add-on.
-4. Enable `YL VertexColForge`.
-5. Open the `YL VertexColForge` panel in the 3D Viewport sidebar.
-
-## 📄 License
-
-The Python add-on code is licensed under `GPL-3.0-or-later`.
-
-Bundled assets under `assets/` are licensed under `CC0-1.0`.
+* 插件 Python 代码采用 `GPL-3.0-or-later` 许可证。
+* `assets/` 目录中的捆绑资源采用 `CC0-1.0` 许可证。
