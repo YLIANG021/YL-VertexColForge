@@ -1,92 +1,87 @@
 # YL VertexColForge
 
-**A comprehensive vertex color / color attribute workstation for Blender 5.x.**
+YL VertexColForge 是一个专注于 **Blender Vertex Color 通道工作流** 的插件。它为 Blender Vertex Color 补充了更直观的单通道查看与编辑流程，让 RGB / R / G / B / A，尤其是 A 通道的绘制、选择、渐变、随机和转换更加直接，并把填充、笔刷、渐变、选择、随机和数据转换结果准确写入目标通道。
 
-YL VertexColForge is an all-in-one vertex color workstation. More than just a vertex color creation tool, it is a "channel-level" mask and color processing center built specifically for game asset creation, stylized rendering, and technical art.
+插件同时支持 Blender 的两种 Vertex Color 域：
 
-The add-on supports both Face Corner and Vertex (Point) color attribute domains. Whether you need to independently control any channel, draw gradients, pack RGBA, bake AO and lighting, or transfer data between textures, weights, and objects, everything can be accomplished seamlessly within a single, streamlined panel.
+- Face Corner
+- Vertex / Point
 
----
-
-## 🌐 Multi-Language Support
-
-Natively supports 13 interface languages: Simplified Chinese, Traditional Chinese, English, Japanese, Korean, German, French, Spanish, Italian, Polish, Portuguese, Russian, and Vietnamese.
+它特别适合制作和整理 **顶点色通道**：你可以将不同来源的遮罩、选择结果、渐变、权重或图片数据分别写入 R / G / B / A 通道，尤其适合需要单独查看、绘制或打包 Alpha / A 通道的工作流，并在 Blender 内完成预览、编辑与通道打包。最终可导出到游戏引擎或材质系统中使用。
 
 ---
 
-## ✨ Core Features
+## 多语言支持
 
-### 1. 👁️ WYSIWYG Channel Preview
-
-Break through default viewport limitations and directly view RGB, Alpha, or any individual channel, while easily switching between different color layers. The current preview channel can be synchronized with the write channel, allowing you to truly "write to the channel you are looking at."
-
-<img width="640" height="480" alt="切换图层和预览单通道(1)" src="https://github.com/user-attachments/assets/ef57287b-9bd6-45e2-951e-e02af2bf7774" />
-
-### 2. 🎨 Brush, Fill, Eyedropper, and Color Palette
-
-The brush tool respects your current selection area, supporting quick painting, one-click filling, and picking colors directly from the model. The built-in palette can save up to 40 frequently used colors for quick reuse across multiple tools.
-
-<img width="640" height="480" alt="笔刷" src="https://github.com/user-attachments/assets/99af1292-5419-4632-9d4c-1c97b9b28cb6" />
-
-### 3. 🌈 Viewport Gradients in Any Direction
-
-Supports real-time preview of gradients in any direction and color. Use the ColorRamp to draw linear or radial gradients directly in the 3D viewport by clicking and dragging. Gradient writing also respects the current channel settings, making it useful for both RGB coloring and single-channel mask creation.
-
-<img width="640" height="480" alt="屏幕渐变" src="https://github.com/user-attachments/assets/87efb96a-330d-4f85-a7e9-e84a5891cd96" />
-
-### 4. 🗺️ Real-Time UV Gradients
-
-Create gradients directly in UV space along UV island directions, perfect for texture-space masks, stylized color bands, and workflows requiring precise UV layout alignment. UV gradients also support the current write channel, facilitating the creation of precise control data that can be packed into RGBA.
-
-<img width="640" height="480" alt="uv渐变" src="https://github.com/user-attachments/assets/6ed8c7ff-32fa-438d-8737-fa67096f788b" />
-
-### 5. ⚡ Quick Color Selection
-
-Click on a color on the model and drag your mouse to preview the selection area in real-time, efficiently isolating the color range you need to edit. The selection result can be used for painting, filling, adjustments, and other selection-restricted operations.
-
-<img width="640" height="480" alt="选择" src="https://github.com/user-attachments/assets/6fe8732f-719c-48b5-8797-a84d30c23bcd" />
-
-### 6. 🪞 One-Click Color Mirroring and Channel Blending
-
-Click and drag to complete color mirroring; the system automatically determines the mirror direction, eliminating the need to manually select axes or positive/negative directions. The channel tools allow copying any channel to another and processing channel data using blend modes like Replace, Multiply, Add, and Overlay.
-
-<img width="640" height="480" alt="镜像" src="https://github.com/user-attachments/assets/580ff9fb-9478-440e-8766-c255e15f4991" />
-
-### 7. 💡 AO, Directional Light, and Curvature Masks
-
-Bake Ambient Occlusion, directional lighting, and curvature data with a single click, featuring real-time effect previews. The generated results can be written to the current channel or blended into existing colors, laying the foundation for stylized textures, material masks, and shading levels.
-
-<img width="640" height="480" alt="Light AO" src="https://github.com/user-attachments/assets/52213cf6-275e-438f-a680-ae0900a1dc9b" />
-
-### 8. 🧪 Real-Time Color Adjustments
-
-Supports adjustments like Levels, Gamma, HSV, Invert, Smooth Blur, and Ramp Remap with live previews. The adjustment process also respects the current channel and selection area. Apply the changes once satisfied, or cancel to restore the original colors.
-
-<img width="640" height="480" alt="ADJUST" src="https://github.com/user-attachments/assets/d38cf614-b9d4-4d26-aa1e-e9f7768032d3" />
-
-### 9. 🎲 Structured Color Randomization
-
-Generate random colors by Connected Mesh, UV Island, Material, Sharp Edge, Angle, Vertex Group, Face, or Vertex. It is an efficient way to quickly create ID Maps, differentiate assets, and introduce stylized variations. Randomized results can be written to the current channel, suitable for both RGB color blocking and single-channel mask generation.
-
-<img width="640" height="480" alt="随机" src="https://github.com/user-attachments/assets/576d7a7a-d715-440c-8797-3ea6e5d38c18" />
-
-### 10. 🔁 Texture, Weight, and Object Transfer
-
-Easily convert between textures and vertex colors, weights and vertex colors, and transfer vertex colors between different mesh objects. Object transfer supports data migration across identical topologies, similar models, and varying topologies, making it ideal for reusing color and mask data across High/Low poly models, LODs, remeshed objects, retopologized meshes, or similar assets.
-
-The transfer tool also supports channel-level data processing. It can read RGB or individual R, G, B, and A channels, writing the results to the target color attribute. This facilitates a complete data pipeline between textures, weights, color attributes, and mesh objects.
+支持简体中文、繁体中文、英语、日语、韩语、德语、法语、西班牙语、意大利语、波兰语、葡萄牙语、俄语和越南语。
 
 ---
 
-## 📦 Installation Guide
+## 核心功能
 
-1. Ensure you are using **Blender 5.0** or a higher version.
-2. Download the `.zip` extension package, or clone this repository.
-3. In Blender, open `Edit > Preferences > Extensions`.
-4. Install the add-on from disk and enable `YL VertexColForge`.
-5. Select a mesh in the 3D Viewport, press `N` to open the sidebar, and navigate to the `YL VertexColForge` panel to start creating.
+### 1. 👁️单通道预览与编辑
 
-## 📄 License
+在视口中查看完整 RGB，或单独查看 R、G、B、A 任意通道的灰度预览。单通道预览基于 Geometry Nodes modifier，不会创建临时 Vertex Color，也不会修改真实 mesh 数据。（导出前请切回 **RGB** 预览，避免将单通道预览修改器一并导出。）
 
-- The add-on Python code is licensed under `GPL-3.0-or-later`.
-- The bundled resources in the `assets/` directory are licensed under `CC0-1.0`.
+预览通道与写入通道保持一致：切到 R 就查看并编辑 R，切到 A 就查看并编辑 A。填充、笔刷、渐变、随机和转换都会写入当前目标通道，不影响其他通道。
+
+<img width="812" height="540" alt="通道预览与编辑" src="https://github.com/user-attachments/assets/d58aa3dc-12b4-4a95-9bc4-ce19ffad3360" />
+
+### 2. 🎨通道填充与通道笔刷
+
+填充和笔刷工具都支持直接在对象模式或编辑模式下直接操作，无需切换到顶点绘制模式。
+
+填充工具可以快速写入 RGB、R、G、B 或 A 通道，并可配合选区限制，只修改需要的区域。
+
+通道笔刷支持直接绘制当前通道，包括 Blender 原生顶点绘制很难处理的 A 通道。配合单通道预览，你可以一边查看 Alpha 灰度结果，一边实时把笔刷写入 A 通道，而不影响 RGB 或其他通道
+
+<img width="812" height="540" alt="填充和笔刷工具" src="https://github.com/user-attachments/assets/014e7aec-c834-4df2-9002-ff1433ac1531" />
+
+### 3. ⚡交互式通道选择
+
+点击模型表面即可采样当前通道值，拖动鼠标实时调整容差，松开后完成选择。实时快速
+
+<img width="812" height="540" alt="选择" src="https://github.com/user-attachments/assets/f1f657c9-7eab-40a5-bcc4-a78f852f5b72" />
+
+### 4. 🌈实时渐变与 Light Mask
+
+使用 ColorRamp 控制颜色和过渡，并在 3D 视口中拖拽生成线性渐变、径向渐变或方向 Light Mask。支持实时预览，并可写入 RGB 或任意 R / G / B / A 单独通道。
+
+<img width="812" height="540" alt="实时渐变与 Light Mask" src="https://github.com/user-attachments/assets/a0c804c6-2da5-4b68-acf1-1258edd88425" />
+
+### 5. 🗺️UV 空间渐变
+
+UV Gradient 可在 UV Editor 中按 UV 空间绘制渐变，并将结果写入当前 RGB / R / G / B / A 通道，适合制作跟随 UV 布局的精确遮罩或通道数据。
+
+<img width="640" height="480" alt="uv" src="https://github.com/user-attachments/assets/5dc371a9-8540-4443-b899-55428124c664" />
+
+### 6. 📦通道打包与通道操作
+
+支持通道复制、通道交换、当前通道反相和归一化。你可以快速整理通道数据，把不同遮罩打包到同一个 Vertex Color 中。
+
+<img width="812" height="540" alt="通道打包与通道操作" src="https://github.com/user-attachments/assets/52e7b3c2-62d6-4203-a828-97732cb836d6" />
+
+### 7. 🎲随机通道
+
+随机工具可将随机值写入当前 RGB / R / G / B / A 通道，并支持按 Connected Mesh、UV Island、Material、Sharp Edge 和 Angle Island 分组随机。
+
+<img width="812" height="540" alt="随机" src="https://github.com/user-attachments/assets/3b4b0e41-2e85-4020-968d-7b2be5b41afd" />
+
+### 8. 🔁Image / Weight 与 Channel 转换
+
+Convert 工具支持 Image、Vertex Group Weights 与 Vertex Color 通道之间的双向转换，可读取或写出 RGB / R / G / B / A 数据，适合作为图片、权重和 Vertex Color 通道之间的数据中转工具。
+
+---
+
+## 使用指南
+
+- 安装并启用 `YL VertexColForge`。
+- 在 3D 视口中选择一个网格对象，按 `N` 打开侧边栏。
+- 进入 `YL VertexColForge` 面板，开启通道预览后开始编辑。
+
+---
+
+## 许可协议
+
+- 插件遵循 `GPL-3.0-or-later` 许可协议。
+- 捆绑资源遵循对应资源文件声明的许可协议。
