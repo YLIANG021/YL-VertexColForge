@@ -1,91 +1,90 @@
 # YL VertexColForge
 
-- **YL VertexColForge**是一个用于 Blender 顶点色 / Color Attribute 的通道编辑工具。它为 RGB / R / G / B / A 通道提供更直接的预览、绘制、选择、渐变、随机、转换和打包流程，减少单通道编辑，也覆盖在常规顶点绘制流程中操作较繁琐的 A 通道
+- **YL VertexColForge** is a channel editing tool for Blender Vertex Color / Color Attribute data. It provides a more direct workflow for previewing, painting, selecting, gradient generation, randomization, conversion, and packing of RGB / R / G / B / A channels, and also makes A-channel editing easier in workflows where it is usually more cumbersome.
 
-- 插件支持 Face Corner 与 Vertex / Point 两种颜色属性域。无论当前目标通道是 RGB、R、G、B 还是 A，填充、笔刷、渐变、随机和转换都会准确写入目标通道，不影响其他通道。
+- The plugin supports both Face Corner and Vertex / Point color attribute domains. Whether the current target channel is RGB, R, G, B, or A, fill, brush, gradient, random, and conversion operations always write accurately to the target channel without affecting the others.
 
-- 它适合制作游戏资产、材质遮罩、顶点色权重、通道打包数据和 Alpha 通道预览。你可以在 Blender 内完成从通道生成、编辑、整理到导出前检查的完整流程。
-
----
-
-## 多语言支持
-
-- 支持英语、简体中文、繁体中文、日语、韩语、德语、法语、西班牙语、意大利语、波兰语、葡萄牙语、俄语和越南语。
+- It is suitable for game assets, material masks, vertex color weights, channel packing data, and Alpha channel preview. You can complete the full workflow from channel generation, editing, and organization to pre-export checking entirely inside Blender.
 
 ---
 
-## 核心功能
+## Multilingual Support
 
-### 1. 👁️顶点色单通道预览与编辑
+- Supports English, 简体中文, 繁體中文, 日本語, 한국어, Deutsch, Français, Español, Italiano, Polski, Português, Русский, and Tiếng Việt.
 
-- 在视口中查看完整 RGB，或单独查看 R、G、B、A 任意通道的灰度预览。单通道预览基于几何节点，非破坏性。（导出前请切回 **RGB** 预览或关闭单通道预览，避免将单通道预览修改器一并导出。）
+---
 
-- 预览通道与写入通道保持一致：切到 R 就查看并编辑 R，切到 A 就查看并编辑 A。填充、笔刷、渐变、随机和转换都会写入当前目标通道，不影响其他通道。
+## Core Features
 
-<img width="812" height="540" alt="通道预览与编辑" src="https://github.com/user-attachments/assets/d58aa3dc-12b4-4a95-9bc4-ce19ffad3360" />
+### 1. 👁️ Vertex Color Single-Channel Preview and Editing
 
-### 2. 🎨顶点色通道填充与通道笔刷
+- View full RGB in the viewport, or preview any single channel as grayscale: R, G, B, or A. Single-channel preview is powered by Geometry Nodes and is non-destructive. (Before exporting, switch back to **RGB** preview or disable single-channel preview to avoid exporting the temporary preview modifier.)
 
-- 无需切换到顶点绘制模式，也可以在对象模式或编辑模式下快速写入当前通道。填充和笔刷都支持选区限制，只修改需要的区域。
+- The preview channel stays in sync with the write channel: switch to R to view and edit R, switch to A to view and edit A. Fill, brush, gradient, random, and conversion tools all write to the current target channel without affecting the others.
 
+<img width="812" height="540" alt="Channel Preview and Editing" src="https://github.com/user-attachments/assets/d58aa3dc-12b4-4a95-9bc4-ce19ffad3360" />
 
-- 通道笔刷支持直接绘制单通道，也覆盖在常规顶点绘制流程中操作较繁琐的 A 通道。配合单通道预览，你可以一边查看 Alpha 灰度结果，一边实时把笔刷写入 A 通道，而不影响其他通道。
+### 2. 🎨 Vertex Color Channel Fill and Channel Brush
 
-<img width="812" height="540" alt="填充和笔刷工具" src="https://github.com/user-attachments/assets/014e7aec-c834-4df2-9002-ff1433ac1531" />
+- You can write to the current channel directly in Object Mode or Edit Mode, without switching to Vertex Paint Mode. Both fill and brush support selection limits, so only the needed area is modified.
 
-### 3. ⚡顶点色交互式通道选择
+- The channel brush can paint a single channel directly, including the A channel, which is often cumbersome in the standard vertex painting workflow. With single-channel preview, you can view the Alpha grayscale result while painting the A channel in real time, without affecting the other channels.
 
-- 点击模型表面即可采样当前通道颜色，拖动鼠标实时调整容差，松开后完成选择，过程直观快速
+<img width="812" height="540" alt="Fill and Brush Tools" src="https://github.com/user-attachments/assets/014e7aec-c834-4df2-9002-ff1433ac1531" />
 
-- 选择逻辑跟随当前通道：在 R 通道中按 R 值选择，在 A 通道中按 Alpha 值选择，避免 RGB 混合判断带来的干扰。
+### 3. ⚡ Interactive Vertex Color Channel Selection
 
-<img width="812" height="540" alt="选择" src="https://github.com/user-attachments/assets/f1f657c9-7eab-40a5-bcc4-a78f852f5b72" />
+- Click on the model surface to sample the current channel color, then drag the mouse to adjust tolerance in real time and release to complete the selection. The process is direct and fast.
 
-### 4. 🌈顶点色实时渐变与 Light Mask
+- The selection logic follows the current channel: select by R value in the R channel, or by Alpha value in the A channel, avoiding interference from mixed RGB comparisons.
 
-- 使用 ColorRamp 控制颜色和过渡，并在 3D 视口中拖拽生成线性渐变、径向渐变或方向 Light Mask。支持实时预览，并可写入 RGB 或任意单通道。
+<img width="812" height="540" alt="Selection" src="https://github.com/user-attachments/assets/f1f657c9-7eab-40a5-bcc4-a78f852f5b72" />
 
-- 适合制作角色、场景和道具上的光照遮罩、方向遮罩、渐变权重或风格化顶点色过渡。
+### 4. 🌈 Real-Time Vertex Color Gradients and Light Mask
 
-<img width="812" height="540" alt="实时渐变与 Light Mask" src="https://github.com/user-attachments/assets/a0c804c6-2da5-4b68-acf1-1258edd88425" />
+- Use ColorRamp to control color and transition, and drag in the 3D View to generate linear gradients, radial gradients, or directional Light Masks. Real-time preview is supported, and the result can be written to RGB or any single channel.
 
-### 5. 🗺️UV 空间渐变
+- Great for lighting masks, directional masks, gradient weights, or stylized vertex color transitions on characters, environments, and props.
 
-- UV Gradient 可在 UV Editor 中按 UV 空间绘制渐变，并将结果写入当前任意通道
+<img width="812" height="540" alt="Real-Time Gradient and Light Mask" src="https://github.com/user-attachments/assets/a0c804c6-2da5-4b68-acf1-1258edd88425" />
+
+### 5. 🗺️ UV Space Gradient
+
+- UV Gradient can draw gradients in UV space inside the UV Editor and write the result to any current channel.
 
 <img width="640" height="480" alt="uv" src="https://github.com/user-attachments/assets/5dc371a9-8540-4443-b899-55428124c664" />
 
-### 6. 📦通道打包与通道操作
+### 6. 📦 Channel Packing and Channel Operations
 
-- 提供通道复制、通道交换、当前通道反相和归一化工具。你可以快速整理 R / G / B / A 数据，把不同来源的遮罩打包到同一个 Vertex Color / Color Attribute 中。
+- Provides channel copy, channel swap, current channel invert, and normalize tools. You can quickly organize R / G / B / A data and pack masks from different sources into the same Vertex Color / Color Attribute.
 
-- 适合导出到游戏引擎、材质系统或后续贴图转换流程中使用。
+- Suitable for export to game engines, material systems, or later texture conversion workflows.
 
-<img width="812" height="540" alt="通道打包与通道操作" src="https://github.com/user-attachments/assets/52e7b3c2-62d6-4203-a828-97732cb836d6" />
+<img width="812" height="540" alt="Channel Packing and Channel Operations" src="https://github.com/user-attachments/assets/52e7b3c2-62d6-4203-a828-97732cb836d6" />
 
-### 7. 🎲随机通道
+### 7. 🎲 Channel Randomization
 
-- 将随机值写入当前 RGB / R / G / B / A 通道，并支持按 Connected Mesh、UV Island、Material、Sharp Edge 和 Angle Island 分组随机。
+- Writes random values into the current RGB / R / G / B / A channel, with support for grouping by Connected Mesh, UV Island, Material, Sharp Edge, and Angle Island.
 
-- 适合快速生成区域变化、材质 ID、遮罩扰动、风格化颜色变化或后续材质随机化数据。
+- Useful for quickly generating regional variation, material IDs, mask noise, stylized color changes, or data for later material randomization.
 
-<img width="812" height="540" alt="随机" src="https://github.com/user-attachments/assets/3b4b0e41-2e85-4020-968d-7b2be5b41afd" />
+<img width="812" height="540" alt="Random" src="https://github.com/user-attachments/assets/3b4b0e41-2e85-4020-968d-7b2be5b41afd" />
 
-### 8. 🔁Image / Weight / Channel 转换
+### 8. 🔁 Image / Weight / Channel Conversion
 
-- 在 Image、Vertex Group Weights 和 Vertex Color 通道之间双向转换数据。可以读取或写出 RGB / R / G / B / A，作为图片、权重和顶点色通道之间的数据中转工具。
-
----
-
-## 使用指南
-
-- 安装并启用 `YL VertexColForge`。
-- 在 3D 视口中选择一个网格对象，按 `N` 打开侧边栏。
-- 进入 `YL VertexColForge` 面板，开启通道预览后开始编辑。
+- Convert data bidirectionally between Image, Vertex Group Weights, and Vertex Color channels. You can read or write RGB / R / G / B / A as a data bridge between images, weights, and vertex color channels.
 
 ---
 
-## 许可协议
+## Getting Started
 
-- 插件遵循 `GPL-3.0-or-later` 许可协议。
-- 捆绑资源遵循对应资源文件声明的许可协议。
+- Install and enable `YL VertexColForge`.
+- Select a mesh object in the 3D View and press `N` to open the sidebar.
+- Open the `YL VertexColForge` panel and start editing after enabling channel preview.
+
+---
+
+## License
+
+- The plugin is licensed under `GPL-3.0-or-later`.
+- Bundled assets follow the respective licenses of their resource files.
