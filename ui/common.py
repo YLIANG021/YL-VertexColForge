@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """Shared UI context helpers."""
 
-import bmesh
-
-from ..core.context import resolve_vertex_selection_mask_for_object
+from ..core.color_attribute import (
+    get_active_color_attribute_safe,
+    get_color_attribute_by_name,
+    get_scene_selected_color_attribute_name,
+)
 from ..i18n import tr, tr_format
 
 PANEL_CATEGORY = "YL VertexColForge"
@@ -17,12 +19,11 @@ def get_mesh_context(context):
 
     mesh = obj.data
     active_color_attr = None
-    if mesh.color_attributes:
-        idx = mesh.color_attributes.active_color_index
-        if 0 <= idx < len(mesh.color_attributes):
-            active_color_attr = mesh.color_attributes[idx]
-        elif len(mesh.color_attributes) > 0:
-            active_color_attr = mesh.color_attributes[0]
+    selected_name = get_scene_selected_color_attribute_name(getattr(context, "scene", None))
+    if selected_name:
+        active_color_attr = get_color_attribute_by_name(mesh, selected_name)
+    if active_color_attr is None:
+        active_color_attr = get_active_color_attribute_safe(mesh)
     return obj, mesh, active_color_attr
 
 
@@ -38,53 +39,6 @@ def has_active_color_attr(context):
 
 def is_point_domain(active_color_attr):
     return active_color_attr is not None and active_color_attr.domain == "POINT"
-
-
-def get_partial_selection_state(context):
-    obj, mesh, _ = get_mesh_context(context)
-    if obj is None or mesh is None:
-        return None
-
-    total_vertices = len(mesh.vertices)
-    if total_vertices == 0:
-        return None
-
-    if obj.mode == "EDIT":
-        try:
-            bm = bmesh.from_edit_mesh(mesh)
-            has_selected = False
-            has_unselected = False
-            for vert in bm.verts:
-                if vert.select:
-                    has_selected = True
-                else:
-                    has_unselected = True
-                if has_selected and has_unselected:
-                    break
-        except Exception:
-            selected_mask = resolve_vertex_selection_mask_for_object(obj)
-            has_selected = bool(selected_mask.any())
-            has_unselected = bool((~selected_mask).any())
-    else:
-        selected_mask = resolve_vertex_selection_mask_for_object(obj, use_live_edit=False)
-        has_selected = bool(selected_mask.any())
-        has_unselected = bool((~selected_mask).any())
-
-    if not has_selected or not has_unselected:
-        return None
-
-    return {
-        "mode_label": obj.mode.replace("_", " ").title(),
-    }
-
-
-def draw_selection_scope_hint(layout, context):
-    selection_state = get_partial_selection_state(context)
-    if selection_state is None:
-        return
-
-    row = layout.row()
-    row.label(text=tr("Some vertices selected. Operations affect selected vertices only."), icon=HINT_ICON)
 
 
 def section_body(layout):

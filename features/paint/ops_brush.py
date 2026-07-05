@@ -7,11 +7,13 @@ import time
 import bpy
 import numpy as np
 
-from ...core.context import resolve_selection_scope, resolve_target_color_attribute
+from ...core.color_attribute import resolve_target_color_attribute
 from ...core.operator_poll import active_mesh_has_color_attributes
+from ...core.selection_scope import resolve_selection_scope
 from ...core.write_engine import write_color_array_to_attribute
 from ...i18n import tr, tr_format
 from ...services import display, transactions
+from ..color import ops_preview
 from . import brush_context, brush_engine, brush_ui_policy, overlay
 
 
@@ -23,6 +25,11 @@ _YLVC_PAINT_SESSION = {
 }
 
 _PAINT_WRITE_INTERVAL = 1.0 / 15.0
+_PREVIEW_LIVE_SMALL_COLOR_ENTRIES = 150_000
+_PREVIEW_LIVE_MEDIUM_COLOR_ENTRIES = 500_000
+_PREVIEW_LIVE_SMALL_INTERVAL = 1.0 / 30.0
+_PREVIEW_LIVE_MEDIUM_INTERVAL = 1.0 / 20.0
+_PREVIEW_LIVE_LARGE_INTERVAL = 1.0 / 12.0
 _PAINT_SAMPLE_SPACING_FACTOR = 0.08
 _PAINT_INTERPOLATE_START_FACTOR = 0.45
 _PAINT_INTERPOLATE_STEP_FACTOR = 0.35
@@ -102,7 +109,11 @@ class MESH_OT_YLVCLocalPaintBrush(bpy.types.Operator):
             return {"CANCELLED"}
 
         if obj.mode == "EDIT":
-            if not transactions.ensure_object_mode_for(context, obj):
+            try:
+                switched = transactions.ensure_object_mode_for(context, obj)
+            except RuntimeError:
+                switched = False
+            if not switched:
                 self.report({"WARNING"}, tr("Could not switch to Object Mode for painting."))
                 return {"CANCELLED"}
             obj = context.active_object
@@ -115,7 +126,7 @@ class MESH_OT_YLVCLocalPaintBrush(bpy.types.Operator):
             self.report({"WARNING"}, tr("No vertex paint brush available."))
             return {"CANCELLED"}
 
-        target, error = resolve_target_color_attribute(context)
+        target, error = resolve_target_color_attribute(context, activate=False)
         if error:
             self.report({"WARNING"}, error)
             return {"CANCELLED"}
@@ -140,7 +151,7 @@ class MESH_OT_YLVCLocalPaintBrush(bpy.types.Operator):
             self.report({"WARNING"}, tr("Selection scope did not match the active color attribute."))
             return {"CANCELLED"}
 
-        self._bvh = brush_engine.build_bvh(self._mesh)
+        self._bvh = brush_engine.build_bvh_for_object(obj)
         if self._bvh is None:
             self._restore_started_mode(context)
             self.report({"WARNING"}, tr("Active mesh has no paintable surface."))
@@ -170,6 +181,9 @@ class MESH_OT_YLVCLocalPaintBrush(bpy.types.Operator):
         self._did_paint = False
         self._colors_dirty = False
         self._last_write_time = 0.0
+        self._preview_dirty_batches = []
+        self._preview_dirty_count = 0
+        self._last_preview_update_time = 0.0
         self._last_paint_hit_world = None
         self._active_stroke_undo = None
         self._stroke_undo_stack = []
@@ -372,18 +386,17 @@ class MESH_OT_YLVCLocalPaintBrush(bpy.types.Operator):
 
         self._hit_world = hit_world
         self._hit_normal = hit_normal
-        world_radius = brush_engine.world_radius_for_screen_radius(
+        world_radius = brush_engine.view_depth_world_radius_for_screen_radius(
             region,
             region_data,
             self._hit_world,
-            self._hit_normal,
             context.scene.ylvc_brush_radius,
         )
         if world_radius <= 0.0:
             world_radius = max(self._brush_world_radius, 1e-6)
         self._brush_world_radius = world_radius
-        self._draw_state["visible"] = True
-        self._draw_state["screen_visible"] = False
+        self._draw_state["visible"] = False
+        self._draw_state["screen_visible"] = True
         self._draw_state["center"] = tuple(self._hit_world)
         self._draw_state["normal"] = tuple(self._hit_normal)
         self._draw_state["radius"] = world_radius
@@ -487,15 +500,14 @@ class MESH_OT_YLVCLocalPaintBrush(bpy.types.Operator):
     def _refresh_brush_radius_after_property_change(self, context):
         self._draw_state["screen_radius"] = self._screen_brush_radius(context)
         self._draw_state["hardness"] = self._brush_hardness(context)
-        if self._hit_world is None or self._hit_normal is None:
+        if self._hit_world is None:
             return
 
         region, region_data = brush_context.find_view3d_window(context)
-        world_radius = brush_engine.world_radius_for_screen_radius(
+        world_radius = brush_engine.view_depth_world_radius_for_screen_radius(
             region,
             region_data,
             self._hit_world,
-            self._hit_normal,
             context.scene.ylvc_brush_radius,
         )
         if world_radius <= 0.0:
@@ -511,6 +523,7 @@ class MESH_OT_YLVCLocalPaintBrush(bpy.types.Operator):
 
         channel_key = getattr(context.scene, "ylvc_channel", getattr(self, "_channel_key", "RGB"))
         painted_count = 0
+        painted_index_batches = []
         for hit_world in self._paint_samples_for_hit(context):
             result = brush_engine.paint_at_hit(
                 context,
@@ -522,6 +535,7 @@ class MESH_OT_YLVCLocalPaintBrush(bpy.types.Operator):
                 channel_key=channel_key,
                 radius=self._brush_world_radius,
                 undo_recorder=self._active_stroke_undo,
+                painted_indices_out=painted_index_batches,
             )
             if result < 0:
                 return result
@@ -531,7 +545,13 @@ class MESH_OT_YLVCLocalPaintBrush(bpy.types.Operator):
         if painted_count > 0:
             self._did_paint = True
             self._colors_dirty = True
-            if not self._flush_colors(context, throttled=True):
+            self._queue_preview_indices(painted_index_batches)
+            preview_live = self._uses_live_preview(context, channel_key=channel_key)
+            if not self._flush_preview_indices(context, force=False):
+                preview_live = False
+                self._preview_dirty_batches = []
+                self._preview_dirty_count = 0
+            if not preview_live and not self._flush_colors(context, throttled=True):
                 return -1
         return painted_count
 
@@ -564,6 +584,7 @@ class MESH_OT_YLVCLocalPaintBrush(bpy.types.Operator):
         self._colors_dirty = True
         self._did_paint = True
         self._last_paint_hit_world = None
+        self._queue_preview_indices(stroke.get("indices", []))
         if not self._flush_colors(context):
             return False
         brush_context.tag_area_redraw(context.area, include_regions=True)
@@ -606,7 +627,88 @@ class MESH_OT_YLVCLocalPaintBrush(bpy.types.Operator):
         min_spacing = radius * _PAINT_SAMPLE_SPACING_FACTOR
         return (self._hit_world - last_hit).length < min_spacing
 
+    def _uses_live_preview(self, context, *, channel_key=None):
+        channel_key = channel_key or getattr(context.scene, "ylvc_channel", getattr(self, "_channel_key", "RGB"))
+        if channel_key == "RGB":
+            return False
+        try:
+            return ops_preview.is_native_preview_enabled(context)
+        except Exception:
+            return False
+
+    def _preview_live_interval(self):
+        color_count = len(getattr(self, "_colors", ()))
+        if color_count <= _PREVIEW_LIVE_SMALL_COLOR_ENTRIES:
+            return _PREVIEW_LIVE_SMALL_INTERVAL
+        if color_count <= _PREVIEW_LIVE_MEDIUM_COLOR_ENTRIES:
+            return _PREVIEW_LIVE_MEDIUM_INTERVAL
+        return _PREVIEW_LIVE_LARGE_INTERVAL
+
+    def _queue_preview_indices(self, index_batches):
+        if not index_batches:
+            return
+        batches = getattr(self, "_preview_dirty_batches", None)
+        if batches is None:
+            self._preview_dirty_batches = []
+            self._preview_dirty_count = 0
+            batches = self._preview_dirty_batches
+
+        for indices in index_batches:
+            indices = np.asarray(indices, dtype=np.int64).reshape(-1)
+            if indices.size == 0:
+                continue
+            batches.append(indices)
+            self._preview_dirty_count = getattr(self, "_preview_dirty_count", 0) + int(indices.size)
+
+    def _flush_preview_indices(self, context, *, force=False):
+        batches = getattr(self, "_preview_dirty_batches", None)
+        if not batches:
+            return True
+
+        channel_key = getattr(context.scene, "ylvc_channel", getattr(self, "_channel_key", "RGB"))
+        if not self._uses_live_preview(context, channel_key=channel_key):
+            self._preview_dirty_batches = []
+            self._preview_dirty_count = 0
+            return True
+
+        now = time.monotonic()
+        if not force and now - getattr(self, "_last_preview_update_time", 0.0) < self._preview_live_interval():
+            return True
+
+        try:
+            dirty_indices = np.unique(np.concatenate(batches))
+        except ValueError:
+            self._preview_dirty_batches = []
+            self._preview_dirty_count = 0
+            return True
+
+        if dirty_indices.size == 0:
+            self._preview_dirty_batches = []
+            self._preview_dirty_count = 0
+            return True
+
+        try:
+            updated = ops_preview.update_preview_color_indices_for_context(
+                self._layer_name,
+                context=context,
+                source_colors=self._colors,
+                indices=dirty_indices,
+            )
+        except Exception:
+            return False
+
+        if not updated:
+            return False
+
+        self._preview_dirty_batches = []
+        self._preview_dirty_count = 0
+        self._last_preview_update_time = now
+        return True
+
     def _flush_colors(self, context, throttled=False):
+        if not throttled and not self._flush_preview_indices(context, force=True):
+            return False
+
         if not getattr(self, "_colors_dirty", False):
             return True
 
@@ -618,6 +720,14 @@ class MESH_OT_YLVCLocalPaintBrush(bpy.types.Operator):
             write_color_array_to_attribute(self._color_attr, self._colors, mesh=self._mesh, update_mesh=True)
         except ReferenceError:
             return False
+        display.finish_color_write(
+            context,
+            self._mesh,
+            self._layer_name,
+            obj=self._obj,
+            source_colors=self._colors,
+            mesh_updated=True,
+        )
 
         self._colors_dirty = False
         self._last_write_time = now

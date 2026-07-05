@@ -11,12 +11,6 @@ CHANNEL_COMPONENTS = {
     "RGB": (0, 1, 2),
 }
 
-PURE_VISUAL_CHANNELS = {
-    "R": 0,
-    "G": 1,
-    "B": 2,
-}
-
 CHANNEL_LABELS = {key: key for key in CHANNEL_COMPONENTS}
 
 PREVIEW_CHANNEL_INDEX = {
@@ -58,15 +52,6 @@ def ensure_rgba_sequence(color_value):
     while len(rgba) < 4:
         rgba.append(1.0 if len(rgba) == 3 else 0.0)
     return rgba
-
-
-def build_pure_channel_color(channel_key, value):
-    color = [0.0, 0.0, 0.0]
-    index = PURE_VISUAL_CHANNELS.get(channel_key)
-    if index is None:
-        return tuple(color)
-    color[index] = clamp_factor(value)
-    return tuple(color)
 
 
 def apply_channel_value(color_value, channel_key, value):

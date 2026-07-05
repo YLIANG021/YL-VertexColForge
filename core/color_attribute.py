@@ -3,11 +3,14 @@
 
 from dataclasses import dataclass
 
-import bmesh
 import bpy
 import numpy as np
 
 from ..i18n import tr_format
+from .mesh_topology import loop_vertex_indices
+
+INTERNAL_PREVIEW_ATTRIBUTE_NAME = "__YLVC_PREVIEW__"
+SELECTED_LAYER_STATE_KEY = "ylvc_selected_layer_name"
 
 
 @dataclass
@@ -20,28 +23,48 @@ class ColorTarget:
     data_type: str
 
 
-@dataclass
-class EditColorTarget:
-    obj: bpy.types.Object
-    mesh: bpy.types.Mesh
-    bm: bmesh.types.BMesh
-    color_attr: object
-    layer_name: str
-    domain: str
-    data_type: str
-    layer: object
-
-
 def color_data_count(mesh, color_attr):
     if color_attr is None:
         return 0
-    if mesh is None:
+    try:
         return len(color_attr.data)
+    except Exception:
+        pass
     if color_attr.domain == "POINT":
         return len(mesh.vertices)
     if color_attr.domain == "CORNER":
         return len(mesh.loops)
-    return len(color_attr.data)
+    return 0
+
+
+def expected_color_data_count(mesh, color_attr):
+    if color_attr is None:
+        return 0
+    if mesh is None:
+        return color_data_count(mesh, color_attr)
+    if color_attr.domain == "POINT":
+        return len(mesh.vertices)
+    if color_attr.domain == "CORNER":
+        return len(mesh.loops)
+    return color_data_count(mesh, color_attr)
+
+
+def color_attribute_data_matches_mesh(mesh, color_attr):
+    actual_count = color_data_count(mesh, color_attr)
+    expected_count = expected_color_data_count(mesh, color_attr)
+    return actual_count == expected_count
+
+
+def refresh_color_attribute_reference(mesh, color_attr, *, allow_internal=False):
+    if mesh is None or color_attr is None:
+        return None
+    name = getattr(color_attr, "name", "")
+    refreshed = get_color_attribute_by_name(mesh, name, allow_internal=allow_internal)
+    if refreshed is None:
+        return None
+    if not color_attribute_data_matches_mesh(mesh, refreshed):
+        return None
+    return refreshed
 
 
 def read_color_attribute_colors(mesh, color_attr, *, shaped=True):
@@ -59,7 +82,61 @@ def write_color_attribute_colors(color_attr, colors):
     color_attr.data.foreach_set("color", colors.ravel())
 
 
-def get_active_color_attribute_safe(mesh):
+def is_internal_color_attribute_name(name):
+    return name == INTERNAL_PREVIEW_ATTRIBUTE_NAME
+
+
+def get_scene_selected_color_attribute_name(scene):
+    if scene is None:
+        return ""
+    try:
+        value = scene.get(SELECTED_LAYER_STATE_KEY, "")
+    except Exception:
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def set_scene_selected_color_attribute_name(scene, layer_name):
+    if scene is None:
+        return
+    try:
+        if layer_name:
+            scene[SELECTED_LAYER_STATE_KEY] = str(layer_name)
+        elif SELECTED_LAYER_STATE_KEY in scene:
+            del scene[SELECTED_LAYER_STATE_KEY]
+    except Exception:
+        pass
+
+
+def get_color_attribute_by_name(mesh, layer_name, *, allow_internal=False):
+    color_attributes = getattr(mesh, "color_attributes", None)
+    if not color_attributes or not layer_name:
+        return None
+    if not allow_internal and is_internal_color_attribute_name(layer_name):
+        return None
+    try:
+        attr = color_attributes.get(layer_name)
+    except Exception:
+        attr = None
+    if attr is None:
+        return None
+    if not allow_internal and is_internal_color_attribute_name(getattr(attr, "name", "")):
+        return None
+    return attr
+
+
+def user_color_attributes(mesh):
+    color_attributes = getattr(mesh, "color_attributes", None)
+    if not color_attributes:
+        return []
+    return [
+        attr
+        for attr in color_attributes
+        if not is_internal_color_attribute_name(getattr(attr, "name", ""))
+    ]
+
+
+def get_active_color_attribute_safe(mesh, *, allow_internal=False):
     color_attributes = getattr(mesh, "color_attributes", None)
     if not color_attributes or len(color_attributes) == 0:
         return None
@@ -67,7 +144,9 @@ def get_active_color_attribute_safe(mesh):
     for attr_name in ("active_color", "active"):
         try:
             active_attr = getattr(color_attributes, attr_name)
-            if active_attr is not None:
+            if active_attr is not None and (
+                allow_internal or not is_internal_color_attribute_name(getattr(active_attr, "name", ""))
+            ):
                 return active_attr
         except Exception:
             pass
@@ -75,11 +154,24 @@ def get_active_color_attribute_safe(mesh):
     try:
         idx = color_attributes.active_color_index
         if 0 <= idx < len(color_attributes):
-            return color_attributes[idx]
+            attr = color_attributes[idx]
+            if allow_internal or not is_internal_color_attribute_name(getattr(attr, "name", "")):
+                return attr
     except Exception:
         pass
 
-    return color_attributes[0]
+    if not allow_internal:
+        user_attrs = user_color_attributes(mesh)
+        if user_attrs:
+            return user_attrs[0]
+
+    if allow_internal:
+        try:
+            return color_attributes[0]
+        except Exception:
+            pass
+
+    return None
 
 
 def set_active_color_attribute(mesh, layer_name):
@@ -98,30 +190,12 @@ def set_active_color_attribute(mesh, layer_name):
     for index, item in enumerate(color_attributes):
         if item.name != layer_name:
             continue
-        for attr_name in ("active_color_index", "active_index", "render_color_index"):
+        for attr_name in ("active_color_index", "active_index"):
             try:
                 setattr(color_attributes, attr_name, index)
             except Exception:
                 pass
         break
-
-
-def find_color_layer(bm, layer_name):
-    if not layer_name:
-        return None, None, None
-
-    collections = (
-        ("POINT", "FLOAT_COLOR", bm.verts.layers.float_color),
-        ("POINT", "BYTE_COLOR", bm.verts.layers.color),
-        ("CORNER", "FLOAT_COLOR", bm.loops.layers.float_color),
-        ("CORNER", "BYTE_COLOR", bm.loops.layers.color),
-    )
-
-    for domain, data_type, layer_collection in collections:
-        layer = layer_collection.get(layer_name)
-        if layer is not None:
-            return layer, domain, data_type
-    return None, None, None
 
 
 def resolve_active_mesh(context):
@@ -131,17 +205,22 @@ def resolve_active_mesh(context):
     return obj, obj.data, None
 
 
-def resolve_target_color_attribute(context, prefer_scene_layer=True, fallback_active=True, required_domain=None):
+def resolve_target_color_attribute(context, prefer_scene_layer=True, fallback_active=True, required_domain=None, activate=True):
     obj, mesh, error = resolve_active_mesh(context)
     if error:
         return None, error
+    if getattr(obj, "mode", "OBJECT") != "OBJECT":
+        try:
+            context.view_layer.objects.active = obj
+            bpy.ops.object.mode_set(mode="OBJECT")
+        except Exception:
+            pass
 
     layer_name = ""
     color_attr = None
     if prefer_scene_layer:
-        layer_value = getattr(context.scene, "ylvc_layer_name", "")
-        layer_name = layer_value.strip() if isinstance(layer_value, str) else ""
-        color_attr = mesh.color_attributes.get(layer_name) if layer_name else None
+        layer_name = get_scene_selected_color_attribute_name(context.scene).strip()
+        color_attr = get_color_attribute_by_name(mesh, layer_name) if layer_name else None
 
     if color_attr is None and fallback_active:
         color_attr = get_active_color_attribute_safe(mesh)
@@ -160,10 +239,11 @@ def resolve_target_color_attribute(context, prefer_scene_layer=True, fallback_ac
 
     if layer_name:
         try:
-            context.scene.ylvc_layer_name = layer_name
+            set_scene_selected_color_attribute_name(context.scene, layer_name)
         except Exception:
             pass
-        set_active_color_attribute(mesh, layer_name)
+        if activate:
+            set_active_color_attribute(mesh, layer_name)
 
     return ColorTarget(
         obj=obj,
@@ -175,55 +255,8 @@ def resolve_target_color_attribute(context, prefer_scene_layer=True, fallback_ac
     ), None
 
 
-def resolve_edit_color_layer(context, prefer_scene_layer=True, fallback_active=True, required_domain=None):
-    target, error = resolve_target_color_attribute(
-        context,
-        prefer_scene_layer=prefer_scene_layer,
-        fallback_active=fallback_active,
-        required_domain=required_domain,
-    )
-    if error:
-        return None, error
-
-    obj = target.obj
-    mesh = target.mesh
-    if obj.mode != "EDIT":
-        return None, tr_format("Switch to Edit Mode to use this tool.")
-
-    try:
-        bm = bmesh.from_edit_mesh(mesh)
-    except Exception:
-        return None, tr_format("Failed to access the edit mesh.")
-
-    layer, domain, data_type = find_color_layer(bm, target.layer_name)
-    if layer is None:
-        return None, tr_format('Color layer "{layer_name}" was not found in Edit Mode.', layer_name=target.layer_name)
-
-    if required_domain is not None and domain != required_domain:
-        return None, tr_format(
-            "{required_domain} color attribute required, found {domain}.",
-            required_domain=required_domain,
-            domain=domain,
-        )
-
-    return EditColorTarget(
-        obj=obj,
-        mesh=mesh,
-        bm=bm,
-        color_attr=target.color_attr,
-        layer_name=target.layer_name,
-        domain=domain,
-        data_type=data_type,
-        layer=layer,
-    ), None
-
-
 def point_colors_to_corner_colors(mesh, point_colors):
-    loop_count = len(mesh.loops)
-    loop_vert_indices = np.empty(loop_count, dtype=np.int32)
-    if loop_count > 0:
-        mesh.loops.foreach_get("vertex_index", loop_vert_indices)
-    return np.asarray(point_colors, dtype=np.float32).reshape(-1, 4)[loop_vert_indices]
+    return np.asarray(point_colors, dtype=np.float32).reshape(-1, 4)[loop_vertex_indices(mesh)]
 
 
 def corner_colors_to_point_colors(mesh, corner_colors):
@@ -232,8 +265,7 @@ def corner_colors_to_point_colors(mesh, corner_colors):
     if loop_count == 0 or vert_count == 0:
         return np.zeros((vert_count, 4), dtype=np.float32)
 
-    loop_vert_indices = np.empty(loop_count, dtype=np.int32)
-    mesh.loops.foreach_get("vertex_index", loop_vert_indices)
+    loop_vert_indices = loop_vertex_indices(mesh)
     corner_colors = np.asarray(corner_colors, dtype=np.float32).reshape(-1, 4)
 
     counts = np.bincount(loop_vert_indices, minlength=vert_count).astype(np.float32)

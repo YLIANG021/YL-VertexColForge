@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Shared Blender operator poll helpers."""
 
+from .color_attribute import user_color_attributes
+
 
 def active_mesh_object(context):
     obj = getattr(context, "active_object", None)
@@ -13,13 +15,21 @@ def has_active_mesh(context):
 
 def active_mesh_has_color_attributes(context):
     obj = active_mesh_object(context)
-    color_attributes = getattr(getattr(obj, "data", None), "color_attributes", None) if obj else None
-    return bool(color_attributes and len(color_attributes) > 0)
+    mesh = getattr(obj, "data", None) if obj else None
+    return bool(user_color_attributes(mesh))
 
 
 def active_mesh_in_mode(context, modes):
     obj = active_mesh_object(context)
-    return obj is not None and getattr(obj, "mode", None) in set(modes)
+    if obj is None:
+        return False
+
+    if isinstance(modes, str):
+        modes = {modes}
+    else:
+        modes = set(modes or ())
+
+    return getattr(obj, "mode", None) in modes
 
 
 def active_mesh_with_color_attributes_in_mode(context, modes):

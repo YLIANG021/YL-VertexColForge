@@ -3,8 +3,6 @@
 
 import numpy as np
 
-from .color_channels import clamp_factor
-
 SOURCE_CHANNEL_INDEX = {
     "R": 0,
     "G": 1,
@@ -51,30 +49,3 @@ def sample_scalar_from_image_pixels(sampled_pixels, source_key, *, write_channel
         rgb_mode="mean",
         write_channel=write_channel,
     )
-
-
-def source_values_from_colors(colors, source_key, *, target_channel="RGB", rgb_mode="luminance"):
-    """Return RGB values or scalar values appropriate for a target write channel."""
-    colors = np.asarray(colors, dtype=np.float32).reshape(-1, 4)
-    source_key = normalize_source_key(source_key)
-    if source_key == "RGB" and target_channel == "RGB":
-        return np.clip(colors[:, 0:3], 0.0, 1.0).copy()
-    return sample_scalar_from_colors(colors, source_key, rgb_mode=rgb_mode, write_channel=target_channel)
-
-
-def transfer_source_values_for_rgb_target(colors, source_key):
-    """Return values for transfer tools that always write into RGB output."""
-    colors = np.asarray(colors, dtype=np.float32).reshape(-1, 4)
-    source_key = normalize_source_key(source_key)
-    if source_key == "RGB":
-        return np.clip(colors[:, :], 0.0, 1.0).copy()
-    return sample_scalar_from_colors(colors, source_key, rgb_mode="mean")
-
-
-def clamp_source_values(values):
-    values = np.asarray(values, dtype=np.float32)
-    return np.clip(values, 0.0, 1.0)
-
-
-def clamp_scalar(value):
-    return clamp_factor(value)

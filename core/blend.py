@@ -7,7 +7,6 @@ from .color_channels import (
     channel_indices,
     channel_slice,
     clamp_factor,
-    ensure_rgba_sequence,
 )
 
 BLEND_MODES = ("REPLACE", "MULTIPLY", "ADD", "SUBTRACT", "OVERLAY")
@@ -35,18 +34,6 @@ def blend_scalar_value(current_value, source_value, blend_mode):
     return clamp_factor(1.0 - 2.0 * (1.0 - current_value) * (1.0 - source_value))
 
 
-def blend_channel_values(old_color, new_color, channel_key, blend_mode):
-    result = ensure_rgba_sequence(old_color)
-    source = ensure_rgba_sequence(new_color)
-    for index in channel_indices(channel_key):
-        result[index] = blend_scalar_value(result[index], source[index], blend_mode)
-    return tuple(result)
-
-
-def blend_color_scalar(current_color, source_color, channel_key, blend_mode):
-    return blend_channel_values(current_color, source_color, channel_key, blend_mode)
-
-
 def blend_colors_np(
     cur_full,
     source_full,
@@ -59,6 +46,7 @@ def blend_colors_np(
     source_buf=None,
     gradient_buf=None,
     low_mask_buf=None,
+    source_is_compact=False,
 ):
     """Blend source_full into cur_full in place for selected channels."""
     blend_mode = normalize_blend_mode(blend_mode)
@@ -111,22 +99,34 @@ def blend_colors_np(
     current = current_buf[:count, :channel_count]
     source = source_buf[:count, :channel_count]
     low_mask = low_mask_buf[:count, :channel_count]
-
     for offset, channel in enumerate(channels):
-        np.take(cur_full[:, channel], mask_indices, out=current[:, offset])
-        np.take(source_full[:, channel], mask_indices, out=source[:, offset])
+        if source_is_compact:
+            source[:, offset] = source_full[:count, channel]
+        else:
+            np.take(source_full[:, channel], mask_indices, out=source[:, offset])
 
     if blend_mode == "REPLACE":
-        np.copyto(current, source)
+        result = source
     elif blend_mode == "MULTIPLY":
+        for offset, channel in enumerate(channels):
+            np.take(cur_full[:, channel], mask_indices, out=current[:, offset])
         np.multiply(current, source, out=current)
+        result = current
     elif blend_mode == "ADD":
+        for offset, channel in enumerate(channels):
+            np.take(cur_full[:, channel], mask_indices, out=current[:, offset])
         np.add(current, source, out=current)
         np.clip(current, 0.0, 1.0, out=current)
+        result = current
     elif blend_mode == "SUBTRACT":
+        for offset, channel in enumerate(channels):
+            np.take(cur_full[:, channel], mask_indices, out=current[:, offset])
         np.subtract(current, source, out=current)
         np.clip(current, 0.0, 1.0, out=current)
+        result = current
     else:
+        for offset, channel in enumerate(channels):
+            np.take(cur_full[:, channel], mask_indices, out=current[:, offset])
         np.less(current, 0.5, out=low_mask)
         current[low_mask] = np.clip(2.0 * current[low_mask] * source[low_mask], 0.0, 1.0)
         current[~low_mask] = np.clip(
@@ -134,12 +134,9 @@ def blend_colors_np(
             0.0,
             1.0,
         )
+        result = current
 
     for offset, channel in enumerate(channels):
         channel_view = cur_full[:, channel]
-        channel_view[mask_indices] = current[:, offset]
+        channel_view[mask_indices] = result[:, offset]
     return cur_full
-
-
-def apply_channel_result_np(cur_full, result_full, channel_key, mask=None):
-    return blend_colors_np(cur_full, result_full, channel_key, "REPLACE", mask)

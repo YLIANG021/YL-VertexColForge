@@ -1,18 +1,23 @@
 # -*- coding: utf-8 -*-
-"""Texture, weight, and mesh color transfer tools."""
+"""Texture and weight transfer tools."""
 
-from . import ops_mesh_transfer, ops_texture, ops_weight
+from . import ops_texture, ops_weight
 
 CLASSES = (
     *ops_texture.CLASSES,
     *ops_weight.CLASSES,
-    *ops_mesh_transfer.CLASSES,
 )
 
 
-def register_properties():
-    ops_mesh_transfer.register_properties()
+def register():
+    import bpy
+
+    for cls in CLASSES:
+        bpy.utils.register_class(cls)
 
 
-def unregister_properties():
-    ops_mesh_transfer.unregister_properties()
+def unregister():
+    import bpy
+
+    for cls in reversed(CLASSES):
+        bpy.utils.unregister_class(cls)

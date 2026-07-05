@@ -1,8 +1,4 @@
-import bpy
-
-from .. import utils
-from ..features.color import ops_preview
-from . import transactions
+from ..core.color_attribute import set_active_color_attribute, set_scene_selected_color_attribute_name
 
 
 def _update_mesh_tag(mesh):
@@ -32,116 +28,80 @@ def _find_object_for_mesh(context, mesh):
     return None
 
 
-def sync_active_layer(mesh, layer_name):
-    if layer_name:
-        utils.set_active_color_attribute(mesh, layer_name)
-        try:
-            ops_preview.sync_preview_color_layer(layer_name)
-        except Exception:
-            pass
-
-
-def is_plugin_preview_enabled(obj):
-    if obj is None or obj.type != "MESH":
-        return False
-    return obj.modifiers.get(ops_preview.PREVIEW_MODIFIER_NAME) is not None
-
-
-def _find_view3d_area_and_region(context):
-    area = getattr(context, "area", None)
-    if area is not None and getattr(area, "type", None) == "VIEW_3D":
-        for region in getattr(area, "regions", []):
-            if getattr(region, "type", None) == "WINDOW":
-                return area, region
-
-    window = getattr(context, "window", None)
-    screen = getattr(window, "screen", None) if window is not None else None
-    if screen is None:
-        return None, None
-
-    for screen_area in getattr(screen, "areas", []):
-        if getattr(screen_area, "type", None) != "VIEW_3D":
-            continue
-        for region in getattr(screen_area, "regions", []):
-            if getattr(region, "type", None) == "WINDOW":
-                return screen_area, region
-    return None, None
-
-
-def _toggle_preview_for_object(context, obj):
-    area, region = _find_view3d_area_and_region(context)
-    window = getattr(context, "window", None)
-    screen = getattr(window, "screen", None) if window is not None else None
-    if area is None or region is None or window is None or screen is None:
-        return False
-
-    override = context.copy()
-    override["window"] = window
-    override["screen"] = screen
-    override["area"] = area
-    override["region"] = region
-    override["scene"] = context.scene
-    override["view_layer"] = context.view_layer
-    override["active_object"] = obj
-    override["object"] = obj
-    override["selected_objects"] = [obj]
-    override["selected_editable_objects"] = [obj]
-
-    try:
-        with transactions.CleanupStack() as cleanup:
-            cleanup.push_object_context(context)
-            transactions.ensure_object_mode_for(context, obj)
-            transactions.make_single_active_object(context, obj)
-            bpy.ops.mesh.ylvc_toggle_preview(override)
-        return True
-    except Exception:
-        return False
-
-
-def ensure_preview_visible(context, layer_name="", obj=None):
-    if obj is None:
-        obj = getattr(context, "active_object", None)
-    if obj is None or obj.type != "MESH":
+def sync_active_layer(mesh, layer_name, context=None, source_colors=None, defer_preview_sync=False, force_preview_sync=False):
+    if not layer_name:
         return
-
-    if layer_name:
-        sync_active_layer(obj.data, layer_name)
-
-    preview_modifier = obj.modifiers.get(ops_preview.PREVIEW_MODIFIER_NAME)
-    if preview_modifier is None and ops_preview.is_preview_supported(context):
+    if context is not None:
         try:
-            if _toggle_preview_for_object(context, obj):
-                preview_modifier = obj.modifiers.get(ops_preview.PREVIEW_MODIFIER_NAME)
-            else:
-                preview_modifier = None
-        except Exception:
-            preview_modifier = None
-
-    if preview_modifier is not None:
-        try:
-            ops_preview.set_preview_channel(preview_modifier, ops_preview.get_preview_channel(context.scene), context)
+            from ..features.color import ops_preview
+            if ops_preview.is_native_preview_enabled(context):
+                scene = getattr(context, "scene", None)
+                channel = getattr(scene, "ylvc_channel", "RGB")
+                should_defer = defer_preview_sync and channel == "RGB"
+                if should_defer and ops_preview.defer_sync_preview_color_layer_for_context(
+                    layer_name,
+                    context=context,
+                    source_colors=source_colors,
+                ):
+                    return
+                if ops_preview.sync_preview_color_layer_for_context(
+                    layer_name,
+                    context=context,
+                    source_colors=source_colors,
+                    force=force_preview_sync,
+                ):
+                    return
         except Exception:
             pass
+    set_active_color_attribute(mesh, layer_name)
 
 
-def refresh_after_color_write(context, mesh, layer_name, obj=None, ensure_preview=True, force_view_update=False):
+def refresh_after_color_write(
+    context,
+    mesh,
+    layer_name,
+    obj=None,
+    ensure_preview=True,
+    force_view_update=False,
+    source_colors=None,
+    mesh_updated=False,
+    defer_preview_sync=False,
+):
     if obj is None:
         obj = _find_object_for_mesh(context, mesh)
 
     _update_mesh_tag(mesh)
-    sync_active_layer(mesh, layer_name)
+    try:
+        set_scene_selected_color_attribute_name(getattr(context, "scene", None), layer_name)
+    except Exception:
+        pass
 
-    preview_enabled = obj is not None and is_plugin_preview_enabled(obj)
-    if obj is not None and (ensure_preview or preview_enabled):
-        ensure_preview_visible(context, layer_name, obj=obj)
+    preview_enabled = False
+    try:
+        from ..features.color import ops_preview
+        preview_enabled = bool(obj is not None and ops_preview.is_native_preview_enabled(context))
+    except Exception:
+        preview_enabled = False
 
-    if force_view_update or preview_enabled:
-        view_layer = getattr(context, "view_layer", None)
+    if mesh is not None and not mesh_updated and (force_view_update or ensure_preview or not preview_enabled):
         try:
-            if view_layer:
-                view_layer.update()
+            mesh.update()
         except Exception:
             pass
+
+    if preview_enabled:
+        should_defer_preview = defer_preview_sync or source_colors is not None
+        force_preview_sync = True
+        sync_active_layer(
+            mesh,
+            layer_name,
+            context=context,
+            source_colors=source_colors,
+            defer_preview_sync=should_defer_preview,
+            force_preview_sync=force_preview_sync,
+        )
+    else:
+        set_active_color_attribute(mesh, layer_name)
 
     area = getattr(context, "area", None)
     if area:
@@ -149,3 +109,28 @@ def refresh_after_color_write(context, mesh, layer_name, obj=None, ensure_previe
             area.tag_redraw()
         except Exception:
             pass
+
+
+def finish_color_write(
+    context,
+    mesh,
+    layer_name,
+    obj=None,
+    ensure_preview=True,
+    force_view_update=False,
+    source_colors=None,
+    mesh_updated=False,
+    defer_preview_sync=False,
+):
+    """Finalize a user-visible write to a real color attribute."""
+    refresh_after_color_write(
+        context,
+        mesh,
+        layer_name,
+        obj=obj,
+        ensure_preview=ensure_preview,
+        force_view_update=force_view_update,
+        source_colors=source_colors,
+        mesh_updated=mesh_updated,
+        defer_preview_sync=defer_preview_sync,
+    )

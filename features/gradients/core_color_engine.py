@@ -4,14 +4,8 @@ import math
 import bpy
 import numpy as np
 
-from ...core.blend import blend_colors_np
-
 RAMP_MATERIAL_NAME = "YLVC_Internal_Ramp_Data"
 RAMP_NODE_NAME = "YLVC_ColorRamp"
-ADJUST_RAMP_MATERIAL_NAME = "YLVC_Adjust_Ramp_Data"
-ADJUST_RAMP_NODE_NAME = "YLVC_Adjust_ColorRamp"
-LIGHT_RAMP_MATERIAL_NAME = "YLVC_Light_Ramp_Data"
-LIGHT_RAMP_NODE_NAME = "YLVC_Light_ColorRamp"
 
 
 def linear_to_srgb(val):
@@ -22,7 +16,7 @@ def linear_to_srgb(val):
 
 
 def build_ramp_lut(ramp, lut_size=512):
-    """Bake a Blender ColorRamp into a float32 LUT."""
+    """Build a float32 LUT from a Blender ColorRamp."""
     lut = np.empty((lut_size, 4), dtype=np.float32)
     for index in range(lut_size):
         color = ramp.evaluate(index / (lut_size - 1.0))
@@ -112,6 +106,21 @@ def sample_lut_array_out(
     return out
 
 
+def adapt_gradient_source_for_channel(colors, channel_key):
+    """Use visible ramp luminance as the alpha source for A-channel writes."""
+    if channel_key != "A":
+        return colors
+
+    colors = np.asarray(colors, dtype=np.float32).reshape(-1, 4)
+    colors[:, 3] = (
+        colors[:, 0] * 0.2126
+        + colors[:, 1] * 0.7152
+        + colors[:, 2] * 0.0722
+    )
+    np.clip(colors[:, 3], 0.0, 1.0, out=colors[:, 3])
+    return colors
+
+
 def _get_materials_collection():
     data = getattr(bpy, "data", None)
     return getattr(data, "materials", None)
@@ -187,8 +196,10 @@ def ensure_ramp_node(material_name=RAMP_MATERIAL_NAME, node_name=RAMP_NODE_NAME)
         material.use_nodes = True
 
     node = find_ramp_node(material, material_name=material_name, node_name=node_name)
+    created_node = False
     if node is None:
         node = material.node_tree.nodes.new("ShaderNodeValToRGB")
+        created_node = True
 
     node.name = node_name
     node.label = node_name
@@ -199,34 +210,6 @@ def ensure_ramp_node(material_name=RAMP_MATERIAL_NAME, node_name=RAMP_NODE_NAME)
 
 def get_or_create_ramp_node():
     return ensure_ramp_node()
-
-
-def ensure_adjust_ramp_node():
-    return ensure_ramp_node(
-        material_name=ADJUST_RAMP_MATERIAL_NAME,
-        node_name=ADJUST_RAMP_NODE_NAME,
-    )
-
-
-def find_adjust_ramp_node():
-    return find_ramp_node(
-        material_name=ADJUST_RAMP_MATERIAL_NAME,
-        node_name=ADJUST_RAMP_NODE_NAME,
-    )
-
-
-def ensure_light_ramp_node():
-    return ensure_ramp_node(
-        material_name=LIGHT_RAMP_MATERIAL_NAME,
-        node_name=LIGHT_RAMP_NODE_NAME,
-    )
-
-
-def find_light_ramp_node():
-    return find_ramp_node(
-        material_name=LIGHT_RAMP_MATERIAL_NAME,
-        node_name=LIGHT_RAMP_NODE_NAME,
-    )
 
 
 def serialize_ramp_data(ramp):
@@ -282,24 +265,6 @@ def restore_ramp_data(ramp, data):
             element.color = tuple(float(component) for component in element_data.get("color", element.color[:4]))
         except Exception:
             pass
-
-
-def reset_ramp_to_default(ramp):
-    if ramp is None:
-        return
-
-    restore_ramp_data(
-        ramp,
-        {
-            "color_mode": "RGB",
-            "interpolation": "LINEAR",
-            "hue_interpolation": "NEAR",
-            "elements": (
-                {"position": 0.0, "color": (0.0, 0.0, 0.0, 1.0)},
-                {"position": 1.0, "color": (1.0, 1.0, 1.0, 1.0)},
-            ),
-        },
-    )
 
 
 def cleanup_ramp_material(remove_material=False, material_name=RAMP_MATERIAL_NAME, node_name=RAMP_NODE_NAME):

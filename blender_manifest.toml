@@ -1,16 +1,13 @@
 schema_version = "1.0.0"
 
 id = "yl_vertexcolforge"
-version = "1.0.0"
+version = "1.1.0"
 name = "YL VertexColForge"
-tagline = "Vertex color write, preview, gradient, mirror, random fill"
+tagline = "Vertex color channel tools for packed masks"
 maintainer = "YLIANG"
 type = "add-on"
 website = "https://github.com/YLIANG021/YL-VertexColForge"
 
-license = ["SPDX:GPL-3.0-or-later", "SPDX:CC0-1.0"]
-blender_version_min = "5.0.0"
+license = ["SPDX:GPL-3.0-or-later"]
+blender_version_min = "4.2.0"
 tags = ["Mesh", "Paint"]
-
-[permissions]
-files = "Load bundled preview data from the extension package"

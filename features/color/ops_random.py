@@ -6,30 +6,15 @@ import bpy
 import numpy as np
 
 from ...i18n import tr, tr_format
-from ... import utils
-from ...core.color_attribute import read_color_attribute_colors
-from ...core.context import resolve_polygon_auto_mask_for_object, resolve_target_color_attribute, resolve_vertex_auto_mask_for_object, resolve_loop_auto_mask_for_object
+from ...core.bmesh_selection import bm_face_in_auto_scope, bm_use_face_selection
+from ...core.color_attribute import read_color_attribute_colors, resolve_target_color_attribute
+from ...core.mesh_topology import loop_vertex_indices, polygon_loop_starts_totals
 from ...core.operator_poll import active_mesh_has_color_attributes
+from ...core.selection_scope import (
+    resolve_polygon_auto_mask_for_object,
+)
 from ...core.write_engine import blend_source_values_into_colors, write_color_array_to_attribute
 from ...services import display, transactions
-
-
-def _resolve_random_group(obj, group_name):
-    clean_name = (group_name or "").strip()
-    if clean_name:
-        group = obj.vertex_groups.get(clean_name)
-        if group is not None:
-            return group
-
-    active_index = getattr(obj.vertex_groups, "active_index", -1)
-    if 0 <= active_index < len(obj.vertex_groups):
-        return obj.vertex_groups[active_index]
-
-    return obj.vertex_groups[0] if obj.vertex_groups else None
-
-
-def _vertex_group_weights(obj, group):
-    return utils.get_vertex_group_weights(obj, group, vertex_count=len(obj.data.vertices))
 
 
 def _expand_face_loop_indices(loops_start, loops_total, face_indices):
@@ -83,7 +68,7 @@ def _flatten_island_faces(islands):
 
 class MESH_OT_YLVCRandomFill(bpy.types.Operator):
     bl_idname = "mesh.ylvc_random_fill"
-    bl_label = "Random Fill"
+    bl_label = "Channel Random"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -91,6 +76,13 @@ class MESH_OT_YLVCRandomFill(bpy.types.Operator):
         return active_mesh_has_color_attributes(context)
 
     def execute(self, context):
+        context_state = transactions.ObjectContextTransaction(context)
+        try:
+            return self._execute_impl(context)
+        finally:
+            context_state.restore()
+
+    def _execute_impl(self, context):
         obj = context.active_object
         if obj is None or obj.type != "MESH":
             self.report({"WARNING"}, tr("Active object must be a mesh."))
@@ -106,67 +98,60 @@ class MESH_OT_YLVCRandomFill(bpy.types.Operator):
             self.report({"WARNING"}, tr("No active UV map found."))
             return {"CANCELLED"}
 
-        if mode == "VERTEX_GROUP" and len(obj.vertex_groups) == 0:
-            self.report({"WARNING"}, tr("No vertex groups found."))
+        transactions.ensure_object_mode_for(context, obj)
+        target, error = resolve_target_color_attribute(context)
+        if error:
+            self.report({"WARNING"}, error)
+            return {"CANCELLED"}
+        attribute = target.color_attr
+        layer_name = target.layer_name
+
+        if mode in {"UV_ISLAND", "ANGLE_ISLAND"} and attribute.domain == "POINT":
+            self.report({"WARNING"}, tr("This random mode requires a Face Corner color attribute."))
             return {"CANCELLED"}
 
-        with transactions.CleanupStack() as cleanup:
-            cleanup.push_object_context(context)
-            transactions.ensure_object_mode_for(context, obj)
-            target, error = resolve_target_color_attribute(context)
-            if error:
-                self.report({"WARNING"}, error)
-                return {"CANCELLED"}
-            attribute = target.color_attr
-            layer_name = target.layer_name
+        try:
+            group_ids, data_count, label = self._build_group_ids(context, attribute, mode)
+        except RuntimeError as exc:
+            self.report({"WARNING"}, str(exc))
+            return {"CANCELLED"}
+        if group_ids is None:
+            return {"CANCELLED"}
 
-            if mode in {"FACE", "UV_ISLAND", "ANGLE_ISLAND"} and attribute.domain == "POINT":
-                self.report({"WARNING"}, tr("This random mode requires a Face Corner color attribute."))
-                return {"CANCELLED"}
+        colors = read_color_attribute_colors(mesh, attribute)
 
-            try:
-                group_ids, data_count, label = self._build_group_ids(context, attribute, mode)
-            except RuntimeError as exc:
-                self.report({"WARNING"}, str(exc))
-                return {"CANCELLED"}
-            if group_ids is None:
-                return {"CANCELLED"}
+        valid_mask = group_ids >= 0
+        if not np.any(valid_mask):
+            self.report({"WARNING"}, tr("No valid targets found for current selection."))
+            return {"CANCELLED"}
 
-            colors = read_color_attribute_colors(mesh, attribute)
+        valid_group_ids = group_ids[valid_mask]
+        unique_groups, inverse = np.unique(valid_group_ids, return_inverse=True)
+        group_count = len(unique_groups)
 
-            valid_mask = group_ids >= 0
-            if not np.any(valid_mask):
-                self.report({"WARNING"}, tr("No valid targets found for current selection."))
-                return {"CANCELLED"}
+        if channel == "RGB":
+            random_values = np.random.rand(group_count, 3).astype(np.float32)[inverse]
+        else:
+            random_gray = np.random.rand(group_count).astype(np.float32)
+            random_values = random_gray[inverse]
 
-            valid_group_ids = group_ids[valid_mask]
-            unique_groups, inverse = np.unique(valid_group_ids, return_inverse=True)
-            group_count = len(unique_groups)
+        blend_source_values_into_colors(colors, random_values, channel, "REPLACE", valid_mask)
+        write_color_array_to_attribute(attribute, colors, update_mesh=False)
+        display.finish_color_write(
+            context,
+            mesh,
+            layer_name,
+            obj=obj,
+            source_colors=colors,
+            defer_preview_sync=True,
+        )
 
-            if channel == "RGB":
-                random_values = np.random.rand(group_count, 3).astype(np.float32)[inverse]
-            else:
-                random_gray = np.random.rand(group_count).astype(np.float32)
-                random_values = random_gray[inverse]
-
-            blend_source_values_into_colors(colors, random_values, channel, "REPLACE", valid_mask)
-            write_color_array_to_attribute(attribute, colors, mesh=mesh)
-            display.refresh_after_color_write(context, mesh, layer_name, obj=obj)
-
-            self.report({"INFO"}, tr_format("Successfully filled {count} {label}.", count=group_count, label=label))
-            return {"FINISHED"}
+        self.report({"INFO"}, tr_format("Successfully filled {count} {label}.", count=group_count, label=label))
+        return {"FINISHED"}
 
     def _build_group_ids(self, context, attribute, mode):
         obj = context.active_object
         mesh = obj.data
-
-        if mode == "FACE":
-            group_ids, data_count = self._build_per_face_group_map(mesh, attribute.domain)
-            return group_ids, data_count, tr("faces")
-
-        if mode == "VERTEX":
-            group_ids, data_count = self._build_per_vertex_group_map(context, attribute.domain)
-            return group_ids, data_count, tr("vertices")
 
         if mode in {"CONNECTED", "UV_ISLAND", "SHARP_EDGE", "ANGLE_ISLAND"}:
             islands = self._collect_face_groups(mesh, mode)
@@ -188,10 +173,6 @@ class MESH_OT_YLVCRandomFill(bpy.types.Operator):
             group_ids, data_count = self._build_material_group_map(mesh, attribute.domain)
             return group_ids, data_count, tr("material groups")
 
-        if mode == "VERTEX_GROUP":
-            group_ids, data_count = self._build_vertex_group_map(context, attribute.domain)
-            return group_ids, data_count, tr("vertex group buckets")
-
         self.report({"WARNING"}, tr_format("Unsupported random mode: {mode}", mode=mode))
         return None, None, None
 
@@ -205,10 +186,12 @@ class MESH_OT_YLVCRandomFill(bpy.types.Operator):
             angle_threshold = float(getattr(bpy.context.scene, "ylvc_random_angle_threshold", math.radians(45.0)))
             angle_cos_threshold = math.cos(max(0.0, min(math.pi, angle_threshold)))
 
-            use_selection = utils.bm_use_face_selection(bm)
+            scene = getattr(bpy.context, "scene", None)
+            affect_selection = getattr(scene, "ylvc_affect_selection", True)
+            use_selection = bm_use_face_selection(bm) if affect_selection else False
 
             def in_scope(face):
-                return utils.bm_face_in_auto_scope(face, use_selection)
+                return bm_face_in_auto_scope(face, use_selection)
 
             face_loop_lookup = self._build_face_loop_lookup(bm.faces, uv_layer, in_scope)
 
@@ -290,11 +273,7 @@ class MESH_OT_YLVCRandomFill(bpy.types.Operator):
 
     @staticmethod
     def _build_face_group_index_map(mesh, islands, domain):
-        poly_count = len(mesh.polygons)
-        loops_start = np.empty(poly_count, dtype=np.int32)
-        loops_total = np.empty(poly_count, dtype=np.int32)
-        mesh.polygons.foreach_get("loop_start", loops_start)
-        mesh.polygons.foreach_get("loop_total", loops_total)
+        loops_start, loops_total = polygon_loop_starts_totals(mesh)
         face_indices, face_group_values = _flatten_island_faces(islands)
 
         if domain == "CORNER":
@@ -307,8 +286,7 @@ class MESH_OT_YLVCRandomFill(bpy.types.Operator):
 
         if domain == "POINT":
             vert_count = len(mesh.vertices)
-            loop_vert_indices = np.empty(len(mesh.loops), dtype=np.int32)
-            mesh.loops.foreach_get("vertex_index", loop_vert_indices)
+            loop_vert_indices = loop_vertex_indices(mesh)
             loop_indices = _expand_face_loop_indices(loops_start, loops_total, face_indices)
             loop_group_values = np.repeat(face_group_values, loops_total[face_indices]) if loop_indices.size > 0 else np.empty(0, dtype=np.int32)
             vert_group_id = _assign_last_group_ids(vert_count, loop_vert_indices[loop_indices], loop_group_values)
@@ -317,58 +295,18 @@ class MESH_OT_YLVCRandomFill(bpy.types.Operator):
         raise ValueError(f"Unsupported color domain: {domain}")
 
     @staticmethod
-    def _build_per_face_group_map(mesh, domain):
-        poly_count = len(mesh.polygons)
-        poly_mask = resolve_polygon_auto_mask_for_object(bpy.context.active_object)
-        face_indices = np.flatnonzero(poly_mask).astype(np.int32, copy=False)
-        loops_start = np.empty(poly_count, dtype=np.int32)
-        loops_total = np.empty(poly_count, dtype=np.int32)
-        mesh.polygons.foreach_get("loop_start", loops_start)
-        mesh.polygons.foreach_get("loop_total", loops_total)
-
-        if domain == "CORNER":
-            loop_count = len(mesh.loops)
-            loop_group_id = np.full(loop_count, -1, dtype=np.int32)
-            loop_indices = _expand_face_loop_indices(loops_start, loops_total, face_indices)
-            if loop_indices.size > 0:
-                loop_group_id[loop_indices] = np.repeat(face_indices, loops_total[face_indices])
-            return loop_group_id, loop_count
-
-        raise ValueError(f"Unsupported color domain: {domain}")
-
-    @staticmethod
-    def _build_per_vertex_group_map(context, domain):
-        obj = context.active_object
-        mesh = obj.data
-        vertex_mask = resolve_vertex_auto_mask_for_object(obj, use_live_edit=False)
-
-        if domain == "POINT":
-            group_ids = np.full(len(mesh.vertices), -1, dtype=np.int32)
-            group_ids[vertex_mask] = np.flatnonzero(vertex_mask).astype(np.int32, copy=False)
-            return group_ids, len(mesh.vertices)
-
-        if domain == "CORNER":
-            loop_count = len(mesh.loops)
-            loop_vert_indices = np.empty(loop_count, dtype=np.int32)
-            mesh.loops.foreach_get("vertex_index", loop_vert_indices)
-            loop_mask = resolve_loop_auto_mask_for_object(obj, loop_vert_indices, use_live_edit=False)
-            group_ids = np.full(loop_count, -1, dtype=np.int32)
-            group_ids[loop_mask] = loop_vert_indices[loop_mask]
-            return group_ids, loop_count
-
-        raise ValueError(f"Unsupported color domain: {domain}")
-
-    @staticmethod
     def _build_material_group_map(mesh, domain):
         poly_count = len(mesh.polygons)
-        poly_mask = resolve_polygon_auto_mask_for_object(bpy.context.active_object)
+        scene = getattr(bpy.context, "scene", None)
+        affect_selection = getattr(scene, "ylvc_affect_selection", True)
+        poly_mask = resolve_polygon_auto_mask_for_object(
+            bpy.context.active_object,
+            affect_selection=affect_selection,
+        )
         material_indices = np.empty(poly_count, dtype=np.int32)
         mesh.polygons.foreach_get("material_index", material_indices)
         face_indices = np.flatnonzero(poly_mask).astype(np.int32, copy=False)
-        loops_start = np.empty(poly_count, dtype=np.int32)
-        loops_total = np.empty(poly_count, dtype=np.int32)
-        mesh.polygons.foreach_get("loop_start", loops_start)
-        mesh.polygons.foreach_get("loop_total", loops_total)
+        loops_start, loops_total = polygon_loop_starts_totals(mesh)
 
         if domain == "CORNER":
             loop_count = len(mesh.loops)
@@ -380,41 +318,11 @@ class MESH_OT_YLVCRandomFill(bpy.types.Operator):
 
         if domain == "POINT":
             vert_count = len(mesh.vertices)
-            loop_vert_indices = np.empty(len(mesh.loops), dtype=np.int32)
-            mesh.loops.foreach_get("vertex_index", loop_vert_indices)
+            loop_vert_indices = loop_vertex_indices(mesh)
             loop_indices = _expand_face_loop_indices(loops_start, loops_total, face_indices)
             loop_group_values = np.repeat(material_indices[face_indices], loops_total[face_indices]) if loop_indices.size > 0 else np.empty(0, dtype=np.int32)
             vert_group_id = _assign_last_group_ids(vert_count, loop_vert_indices[loop_indices], loop_group_values)
             return vert_group_id, vert_count
-
-        raise ValueError(f"Unsupported color domain: {domain}")
-
-    @staticmethod
-    def _build_vertex_group_map(context, domain):
-        obj = context.active_object
-        mesh = obj.data
-        scene = context.scene
-        group = _resolve_random_group(obj, getattr(scene, "ylvc_random_vertex_group", ""))
-        if group is None:
-            raise RuntimeError("No vertex group found.")
-
-        weights = _vertex_group_weights(obj, group)
-        vertex_mask = resolve_vertex_auto_mask_for_object(obj, use_live_edit=False)
-        quantized = np.floor(np.clip(weights, 0.0, 1.0) * 255.0 + 0.5).astype(np.int32)
-
-        if domain == "POINT":
-            group_ids = np.full(len(mesh.vertices), -1, dtype=np.int32)
-            group_ids[vertex_mask] = quantized[vertex_mask]
-            return group_ids, len(mesh.vertices)
-
-        if domain == "CORNER":
-            loop_count = len(mesh.loops)
-            loop_vert_indices = np.empty(loop_count, dtype=np.int32)
-            mesh.loops.foreach_get("vertex_index", loop_vert_indices)
-            loop_mask = resolve_loop_auto_mask_for_object(obj, loop_vert_indices, use_live_edit=False)
-            group_ids = np.full(loop_count, -1, dtype=np.int32)
-            group_ids[loop_mask] = quantized[loop_vert_indices[loop_mask]]
-            return group_ids, loop_count
 
         raise ValueError(f"Unsupported color domain: {domain}")
 

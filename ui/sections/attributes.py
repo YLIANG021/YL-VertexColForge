@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Color attribute and viewport preview UI."""
+"""Attribute and viewport preview UI."""
 
 from ...features.color import ops_preview
 from ...i18n import tr
@@ -10,26 +10,30 @@ def draw_color_attributes_section(layout, context):
     scene = context.scene
     obj, _, active_color_attr = get_mesh_context(context)
     content = section_body(layout)
+    preview_enabled = ops_preview.is_native_preview_enabled(context)
+    editing_enabled = not preview_enabled
 
     if active_color_attr:
-        is_previewing = obj.modifiers.get(ops_preview.PREVIEW_MODIFIER_NAME) is not None
         row_layer_ctrl = content.row(align=True)
         row_layer_ctrl.scale_y = 1.0
-        row_layer_ctrl.enabled = not is_previewing
-        row_layer_ctrl.prop(scene, "ylvc_layer_name", text="")
-        row_layer_ctrl.operator("mesh.ylvc_rename_color_layer", text="", icon="PREFERENCES")
+        row_layer_ctrl.prop_search(scene, "ylvc_layer_name", obj.data, "color_attributes", text="")
         row_layer_ctrl.operator("mesh.ylvc_ensure_color_layer", text="", icon="ADD")
-        row_layer_ctrl.operator("mesh.ylvc_remove_color_layer", text="", icon="REMOVE")
+        remove_button = row_layer_ctrl.row(align=True)
+        remove_button.enabled = editing_enabled
+        remove_button.operator("mesh.ylvc_remove_color_layer", text="", icon="REMOVE")
+        settings_button = row_layer_ctrl.row(align=True)
+        settings_button.enabled = editing_enabled
+        settings_button.operator("mesh.ylvc_rename_color_layer", text="", icon="PREFERENCES")
 
         if active_color_attr.domain == "POINT":
             content.separator(factor=0.35)
             draw_point_domain_hint(content, active_color_attr)
 
         content.separator(factor=0.5)
-        content.label(text=tr("Write Channel"))
+        content.label(text=tr("Preview Write"))
         row_channel = content.row(align=True)
         row_channel.scale_y = 1.25
-        row_channel.enabled = is_previewing
+        row_channel.enabled = preview_enabled
         row_channel.prop(scene, "ylvc_channel", expand=True)
     else:
         row_layer_ctrl = content.row(align=True)
@@ -38,29 +42,33 @@ def draw_color_attributes_section(layout, context):
         return False
 
     content.separator()
-    preview_supported = ops_preview.is_preview_supported(context)
     preview_row = content.row(align=True)
     preview_row.scale_y = 1.75
-    preview_row.enabled = is_previewing or preview_supported
-    preview_row.operator(
-        "mesh.ylvc_toggle_preview",
-        text=tr("Disable Viewport Preview") if is_previewing else tr("Enable Viewport Preview"),
-        depress=is_previewing,
-    )
-    sync_toggle = preview_row.row(align=True)
-    sync_toggle.enabled = is_previewing
-    sync_toggle.prop(
-        scene,
-        "ylvc_sync_preview_channel",
-        text="",
-        icon="LINKED" if scene.ylvc_sync_preview_channel else "UNLINKED",
-        toggle=True,
-    )
-    if not preview_supported and not is_previewing:
-        draw_unavailable(content, "viewport preview in Workbench")
-    preview_settings = content.column()
-    preview_settings.enabled = is_previewing
-    if not scene.ylvc_sync_preview_channel:
-        row_preview_channel = preview_settings.row(align=True)
-        row_preview_channel.prop(scene, "ylvc_preview_channel", expand=True)
+    if ops_preview.is_vertex_paint_single_channel(context):
+        preview_row.operator("mesh.ylvc_switch_rgb_preview", text=tr("Switch to RGB Preview"))
+        content.label(
+            text=tr("Single-channel preview is not suitable for native painting. Switch to RGB preview first."),
+            icon="KEYTYPE_KEYFRAME_VEC",
+        )
+    else:
+        preview_row.operator(
+            "mesh.ylvc_toggle_preview",
+            text=tr("Exit Preview") if preview_enabled else tr("Preview Channel"),
+            depress=preview_enabled,
+        )
+        flat_toggle = preview_row.row(align=True)
+        flat_toggle.enabled = preview_enabled
+        flat_toggle.operator(
+            "mesh.ylvc_toggle_preview_flat",
+            text="",
+            icon="SHADING_SOLID",
+            depress=ops_preview.is_flat_preview_enabled(context),
+        )
+
+    content.separator(factor=0.35)
+    affect_row = content.row(align=True)
+    affect_row.scale_y = 1.15
+    affect_row.enabled = preview_enabled
+    affect_text = "Only Affect Selected Mesh Part" if scene.ylvc_affect_selection else "Affect Whole Mesh"
+    affect_row.prop(scene, "ylvc_affect_selection", text=tr(affect_text))
     return True

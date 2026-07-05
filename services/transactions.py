@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 import bpy
 
-from . import session
+from ..core import mode_session
 
 
 def safe_call(callback, *args, **kwargs):
@@ -58,7 +58,7 @@ class CleanupStack:
                 return
             from . import display
 
-            display.refresh_after_color_write(context, mesh, layer_name, obj=obj)
+            display.finish_color_write(context, mesh, layer_name, obj=obj)
 
         self.add(refresh)
 
@@ -81,10 +81,10 @@ class ObjectContextTransaction:
     state: object = field(init=False)
 
     def __post_init__(self):
-        self.state = session.capture_object_context(self.context)
+        self.state = mode_session.capture_object_context(self.context)
 
     def restore(self):
-        session.restore_object_context(self.context, self.state)
+        mode_session.restore_object_context(self.context, self.state)
 
     def __enter__(self):
         return self
@@ -92,6 +92,14 @@ class ObjectContextTransaction:
     def __exit__(self, _exc_type, _exc, _tb):
         self.restore()
         return False
+
+
+def execute_with_context_restore(context, callback):
+    context_state = ObjectContextTransaction(context)
+    try:
+        return callback()
+    finally:
+        context_state.restore()
 
 
 class AttributeTransaction:
@@ -110,43 +118,6 @@ class AttributeTransaction:
     def restore(self):
         for attr_name, value in self._values:
             safe_call(setattr, self.owner, attr_name, value)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, _exc_type, _exc, _tb):
-        self.restore()
-        return False
-
-
-class ObjectSelectionTransaction:
-    """Restore active object and selected objects for a view layer."""
-
-    def __init__(self, context):
-        self.context = context
-        self.view_layer = context.view_layer
-        self.active_object = getattr(self.view_layer.objects, "active", None)
-        self.selected_objects = list(getattr(context, "selected_objects", []))
-
-    def restore(self):
-        try:
-            for obj in self.view_layer.objects:
-                safe_call(obj.select_set, False)
-        except Exception:
-            pass
-
-        for obj in self.selected_objects:
-            try:
-                if obj is not None and obj.name in bpy.data.objects:
-                    obj.select_set(True)
-            except Exception:
-                pass
-
-        try:
-            if self.active_object is not None and self.active_object.name in bpy.data.objects:
-                self.view_layer.objects.active = self.active_object
-        except Exception:
-            pass
 
     def __enter__(self):
         return self
@@ -243,23 +214,12 @@ def remove_datablock(collection, datablock, *, do_unlink=False):
     safe_call(collection.remove, datablock, **kwargs)
 
 
-def remove_datablock_if_unused(collection, datablock, *, do_unlink=False):
-    if datablock is None:
-        return
-    try:
-        if datablock.users != 0:
-            return
-    except Exception:
-        return
-    remove_datablock(collection, datablock, do_unlink=do_unlink)
-
-
 def make_single_active_object(context, obj):
-    session.make_single_active_object(context, obj)
+    mode_session.make_single_active_object(context, obj)
 
 
 def make_active_with_selected(context, active_obj, selected_objects):
-    session.ensure_object_mode(context)
+    mode_session.ensure_object_mode(context)
     try:
         for obj in context.view_layer.objects:
             obj.select_set(False)
@@ -289,24 +249,20 @@ def ensure_object_mode_for(context, obj):
     try:
         if obj.name in bpy.data.objects:
             context.view_layer.objects.active = obj
-            return session.ensure_object_mode(context)
+            return mode_session.ensure_object_mode(context)
     except Exception:
         pass
     return False
 
 
 def set_mode(context, mode):
-    return session.set_object_mode(context, mode)
-
-
-def set_render_engine(scene, engine):
-    safe_call(setattr, scene.render, "engine", engine)
+    return mode_session.set_object_mode(context, mode)
 
 
 def restore_active_color_attribute(mesh, layer_name):
     if callable(layer_name):
         layer_name = layer_name()
-    session.restore_active_layer(mesh, layer_name)
+    mode_session.restore_active_layer(mesh, layer_name)
 
 
 def create_temp_color_attribute(mesh, name, domain, data_type="FLOAT_COLOR"):

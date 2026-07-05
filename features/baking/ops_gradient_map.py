@@ -1,50 +1,51 @@
 import bpy
 import math
+import time
 import numpy as np
 from ...core.color_attribute import (
-    get_active_color_attribute_safe,
     read_color_attribute_colors,
-    set_active_color_attribute,
+    refresh_color_attribute_reference,
+    resolve_target_color_attribute,
 )
-from ...core.context import (
-    resolve_component_selection_masks_for_object,
+from ...core.selection_scope import (
     resolve_loop_auto_mask_for_object,
     resolve_vertex_auto_mask_for_object,
 )
 from ...core.operator_poll import has_active_mesh
 from ...core.write_engine import restore_color_array_to_attribute, write_blended_color_array_to_attribute
 from ...i18n import tr, tr_format
-from ...services import transactions
-from ..gradients.core_color_engine import build_ramp_lut, ensure_light_ramp_node, sample_lut_array_out
+from ...services import display, transactions
+from ..gradients.core_color_engine import adapt_gradient_source_for_channel, build_ramp_lut, find_ramp_node, sample_lut_array_out
 from ..gradients.core_overlay import draw_gradient_overlay_callback
+
+
+LIVE_WRITE_MAX_COLOR_ENTRIES = 150_000
+LIVE_WRITE_MAX_POLYGONS = 50_000
+LARGE_MESH_OVERLAY_INTERVAL = 1.0 / 20.0
+LARGE_MESH_OVERLAY_MOUSE_THRESHOLD_SQ = 16.0
 
 
 # ==========================================
 # Helpers
 # ==========================================
 
-def ensure_active_color_attribute(mesh, name="DirectionalMask", domain="POINT"):
-    """Return the active color attribute, or create a fallback attribute when needed."""
-    color_attr = get_active_color_attribute_safe(mesh)
-
-    if color_attr is not None:
-        return color_attr
-
+def _resolve_directional_color_target(context, obj):
+    target, error = resolve_target_color_attribute(context, activate=False)
+    if error:
+        return None, error
+    if target.obj != obj:
+        return None, tr("Active mesh changed while preparing directional lighting.")
+    if target.domain not in {"POINT", "CORNER"}:
+        return None, tr_format("Unsupported color domain: {domain}", domain=target.domain)
+    if target.data_type not in {"FLOAT_COLOR", "BYTE_COLOR"}:
+        return None, tr("Select a color attribute first.")
     try:
-        color_attr = mesh.color_attributes.get(name)
+        has_color_data = len(target.color_attr.data) == 0 or hasattr(target.color_attr.data[0], "color")
     except Exception:
-        color_attr = None
-
-    if color_attr is None:
-        color_attr = mesh.color_attributes.new(
-            name=name,
-            type="FLOAT_COLOR",
-            domain=domain,
-        )
-
-    set_active_color_attribute(mesh, color_attr.name)
-
-    return color_attr
+        has_color_data = False
+    if not has_color_data:
+        return None, tr("Select a color attribute first.")
+    return target, None
 
 
 def get_world_normals_numpy(obj, mesh):
@@ -69,42 +70,13 @@ def get_world_normals_numpy(obj, mesh):
     return world_normals
 
 
-def _edit_component_vertex_auto_mask(obj):
-    """Collapse the current Edit Mode component selection into a vertex mask."""
-    vert_mask, edge_mask, face_mask = resolve_component_selection_masks_for_object(obj, use_live_edit=True)
-    if vert_mask.size == 0:
-        return vert_mask
-
-    if not (np.any(vert_mask) or np.any(edge_mask) or np.any(face_mask)):
-        return np.ones(vert_mask.shape[0], dtype=bool)
-
-    mesh = obj.data
-    result = vert_mask.copy()
-
-    if edge_mask.size > 0 and np.any(edge_mask):
-        edge_vertices = np.empty(len(mesh.edges) * 2, dtype=np.int32)
-        mesh.edges.foreach_get("vertices", edge_vertices)
-        edge_vertices.shape = (-1, 2)
-        selected_edges = edge_vertices[edge_mask[: len(mesh.edges)]]
-        if selected_edges.size > 0:
-            result[selected_edges.ravel()] = True
-
-    if face_mask.size > 0 and np.any(face_mask):
-        for polygon in mesh.polygons:
-            if polygon.index >= face_mask.size or not face_mask[polygon.index]:
-                continue
-            result[np.asarray(polygon.vertices, dtype=np.int32)] = True
-
-    return result
-
-
 # ==========================================
 # Directional Lighting Operator
 # ==========================================
 
-class MESH_OT_VCM_TestDirectionalMask(bpy.types.Operator):
-    bl_idname = "mesh.vcm_test_dir_mask"
-    bl_label = "Directional Lighting"
+class MESH_OT_YLVCLightMask(bpy.types.Operator):
+    bl_idname = "mesh.ylvc_light_mask"
+    bl_label = "Light Mask"
     bl_description = "Drag in the viewport to project directional lighting through the shared color ramp"
     bl_options = {"REGISTER", "UNDO"}
 
@@ -119,56 +91,42 @@ class MESH_OT_VCM_TestDirectionalMask(bpy.types.Operator):
         return has_active_mesh(context)
 
     def invoke(self, context, event):
-        self._context_state = None
         obj = context.active_object
 
         if not obj or obj.type != "MESH":
             self.report({"WARNING"}, tr("Select a mesh object first."))
             return {"CANCELLED"}
 
-        edit_vertex_mask = None
-        if obj.mode == "EDIT":
-            self._context_state = transactions.ObjectContextTransaction(context)
-            edit_vertex_mask = _edit_component_vertex_auto_mask(obj)
+        if obj.mode != "OBJECT":
             transactions.ensure_object_mode_for(context, obj)
-            if obj.mode != "OBJECT":
-                self._restore_initial_context(context)
-                self.report({"WARNING"}, tr("Could not switch to Object Mode for directional lighting."))
-                return {"CANCELLED"}
-        elif obj.mode != "OBJECT":
-            self.report({"WARNING"}, tr("Run this tool in Object or Edit Mode."))
+        if obj.mode != "OBJECT":
+            self.report({"WARNING"}, tr("Could not switch to Object Mode for directional lighting."))
             return {"CANCELLED"}
 
-        ramp_node = ensure_light_ramp_node()
+        ramp_node = find_ramp_node()
         if ramp_node is None or not getattr(ramp_node, "color_ramp", None):
-            self._restore_initial_context(context)
-            self.report({"ERROR"}, tr("Could not create the gradient ramp."))
+            self.report({"WARNING"}, tr("Create the gradient ramp first."))
             return {"CANCELLED"}
 
-        mesh = obj.data
-
-        color_attr = ensure_active_color_attribute(mesh)
-
-        if color_attr is None:
-            self._restore_initial_context(context)
-            self.report({"WARNING"}, tr("Could not access the active color attribute."))
+        target, error = _resolve_directional_color_target(context, obj)
+        if error:
+            self.report({"WARNING"}, error)
             return {"CANCELLED"}
 
-        if color_attr.domain not in {"POINT", "CORNER"}:
-            self._restore_initial_context(context)
-            self.report({"WARNING"}, tr_format("Unsupported color domain: {domain}", domain=color_attr.domain))
-            return {"CANCELLED"}
+        mesh = target.mesh
+        color_attr = target.color_attr
 
         self.obj = obj
         self.mesh = mesh
         self.color_attr = color_attr
+        self.layer_name = color_attr.name
         self.domain = color_attr.domain
 
         vert_count = len(mesh.vertices)
         data_count = len(color_attr.data)
+        polygon_count = len(mesh.polygons)
 
         if vert_count == 0 or data_count == 0:
-            self._restore_initial_context(context)
             self.report({"WARNING"}, tr("The object has no writable color data."))
             return {"CANCELLED"}
 
@@ -178,10 +136,14 @@ class MESH_OT_VCM_TestDirectionalMask(bpy.types.Operator):
         # Cache original colors so cancel can restore them.
         self.orig_colors = read_color_attribute_colors(mesh, self.color_attr)
 
-        if edit_vertex_mask is not None and edit_vertex_mask.size == vert_count:
-            self.data_mask = edit_vertex_mask.copy()
-        elif self.domain == "POINT":
-            self.data_mask = resolve_vertex_auto_mask_for_object(obj, use_live_edit=False)
+        affect_selection = getattr(context.scene, "ylvc_affect_selection", True)
+
+        if self.domain == "POINT":
+            self.data_mask = resolve_vertex_auto_mask_for_object(
+                obj,
+                use_live_edit=False,
+                affect_selection=affect_selection,
+            )
         else:
             self.data_mask = None
 
@@ -200,16 +162,25 @@ class MESH_OT_VCM_TestDirectionalMask(bpy.types.Operator):
             self.loop_vi = np.empty(data_count, dtype=np.int32)
             mesh.loops.foreach_get("vertex_index", self.loop_vi)
             self.tmp_t_data = np.empty(data_count, dtype=np.float32)
-            if edit_vertex_mask is not None and edit_vertex_mask.size == vert_count:
-                self.data_mask = edit_vertex_mask[self.loop_vi]
-            else:
-                self.data_mask = resolve_loop_auto_mask_for_object(obj, self.loop_vi, use_live_edit=False)
+            self.data_mask = resolve_loop_auto_mask_for_object(
+                obj,
+                self.loop_vi,
+                use_live_edit=False,
+                affect_selection=affect_selection,
+            )
 
         self.start_pos = None
         self.mouse_pos = None
+        self._handle = None
         self.last_mouse_pos = None
         self.last_direction = None
         self.has_dragged = False
+        self._last_overlay_time = 0.0
+        self._last_overlay_mouse_pos = None
+        self._live_write_enabled = (
+            data_count <= LIVE_WRITE_MAX_COLOR_ENTRIES
+            and polygon_count <= LIVE_WRITE_MAX_POLYGONS
+        )
         self.lut = build_ramp_lut(ramp_node.color_ramp, 512)
         context.scene.ylvc_is_tracing = True
         if hasattr(context.scene, "ylvc_tracing_type"):
@@ -229,26 +200,47 @@ class MESH_OT_VCM_TestDirectionalMask(bpy.types.Operator):
             "POST_PIXEL",
         )
 
-        context.window_manager.modal_handler_add(self)
-
         try:
+            context.window_manager.modal_handler_add(self)
             context.workspace.status_text_set(tr("Drag with LMB to define the light direction. RMB or Esc cancels."))
-        except Exception:
-            pass
+        except Exception as exc:
+            self._finish(context)
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
 
         return {"RUNNING_MODAL"}
 
     def modal(self, context, event):
-        if context.area:
-            context.area.tag_redraw()
+        try:
+            return self._modal_impl(context, event)
+        except Exception as exc:
+            self._handle_modal_exception(context, exc)
+            return {"CANCELLED"}
 
+    def cancel(self, context):
+        self._finish(context)
+
+    def _handle_modal_exception(self, context, exc):
+        try:
+            self.report({"ERROR"}, str(exc))
+        except Exception:
+            pass
+        try:
+            restore_color_array_to_attribute(self.color_attr, self.orig_colors, mesh=self.mesh, update_mesh=False)
+            self._refresh_color_display(context, self.orig_colors)
+        except Exception:
+            pass
+        self._finish(context)
+
+    def _modal_impl(self, context, event):
         if self.obj is None or self.obj.name not in bpy.data.objects:
             self._finish(context)
             return {"CANCELLED"}
 
         if event.type in {"RIGHTMOUSE", "ESC"}:
             try:
-                restore_color_array_to_attribute(self.color_attr, self.orig_colors, mesh=self.mesh)
+                restore_color_array_to_attribute(self.color_attr, self.orig_colors, mesh=self.mesh, update_mesh=False)
+                self._refresh_color_display(context, self.orig_colors)
             except Exception:
                 pass
 
@@ -263,9 +255,14 @@ class MESH_OT_VCM_TestDirectionalMask(bpy.types.Operator):
                 self.last_direction = None
                 self.has_dragged = False
                 self._draw_state["start_pos"] = self.start_pos
-                self._draw_state["mouse_pos"] = self.start_pos
+                self._update_overlay_mouse(context, self.start_pos, force=True)
+                self._last_overlay_time = 0.0
+                self._last_overlay_mouse_pos = self.start_pos
 
             elif event.value == "RELEASE" and self.start_pos is not None:
+                self.mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+                if not getattr(self, "_live_write_enabled", True):
+                    self.execute_mask_engine(context)
                 self._finish(context)
                 return {"FINISHED"}
 
@@ -275,12 +272,18 @@ class MESH_OT_VCM_TestDirectionalMask(bpy.types.Operator):
             if self.last_mouse_pos is not None:
                 dxp = new_mouse_pos[0] - self.last_mouse_pos[0]
                 dyp = new_mouse_pos[1] - self.last_mouse_pos[1]
-                if (dxp * dxp + dyp * dyp) < (self.mouse_move_threshold * self.mouse_move_threshold):
+                threshold_sq = self.mouse_move_threshold * self.mouse_move_threshold
+                if not getattr(self, "_live_write_enabled", True):
+                    threshold_sq = LARGE_MESH_OVERLAY_MOUSE_THRESHOLD_SQ
+                if (dxp * dxp + dyp * dyp) < threshold_sq:
                     return {"RUNNING_MODAL"}
 
             self.mouse_pos = new_mouse_pos
             self.last_mouse_pos = new_mouse_pos
-            self._draw_state["mouse_pos"] = self.mouse_pos
+            self._update_overlay_mouse(context, self.mouse_pos)
+
+            if not getattr(self, "_live_write_enabled", True):
+                return {"RUNNING_MODAL"}
 
             if self.execute_mask_engine(context):
                 self.has_dragged = True
@@ -288,6 +291,9 @@ class MESH_OT_VCM_TestDirectionalMask(bpy.types.Operator):
         return {"RUNNING_MODAL"}
 
     def execute_mask_engine(self, context):
+        if not self._refresh_writable_color_attribute(context):
+            return False
+
         if self.start_pos is None or self.mouse_pos is None:
             return False
 
@@ -345,7 +351,8 @@ class MESH_OT_VCM_TestDirectionalMask(bpy.types.Operator):
 
         sample_lut_array_out(self.lut, t_data, self.ramp_colors)
         channel_key = getattr(context.scene, "ylvc_channel", "RGB")
-        blend_mode = getattr(context.scene, "ylvc_light_blend_mode", "REPLACE")
+        blend_mode = getattr(context.scene, "ylvc_blend_mode", "REPLACE")
+        adapt_gradient_source_for_channel(self.ramp_colors, channel_key)
 
         self.work_colors = write_blended_color_array_to_attribute(
             self.color_attr,
@@ -356,18 +363,101 @@ class MESH_OT_VCM_TestDirectionalMask(bpy.types.Operator):
             mask=self.data_mask,
             mesh=self.mesh,
         )
+        self._refresh_color_display(context, self.work_colors)
 
         return True
 
-    def _restore_initial_context(self, context):
-        context_state = getattr(self, "_context_state", None)
-        if context_state is None:
-            return
+    def _refresh_writable_color_attribute(self, context):
+        layer_name = getattr(self, "layer_name", "")
+        mesh = getattr(self, "mesh", None)
+        if mesh is None or not layer_name:
+            return False
+
+        expected_count = len(getattr(self, "orig_colors", ()))
+        color_attr = refresh_color_attribute_reference(mesh, getattr(self, "color_attr", None))
+        if color_attr is None:
+            try:
+                named_attr = mesh.color_attributes.get(layer_name)
+            except Exception:
+                named_attr = None
+            color_attr = refresh_color_attribute_reference(mesh, named_attr)
+        data_count = len(color_attr.data) if color_attr is not None else 0
+
+        if color_attr is not None and data_count == expected_count:
+            self.color_attr = color_attr
+            return True
+
+        target, error = _resolve_directional_color_target(context, getattr(self, "obj", None))
+        if error or target is None or target.layer_name != layer_name:
+            message = error or tr("Active color attribute changed during directional lighting.")
+            try:
+                self.report({"WARNING"}, message)
+            except Exception:
+                pass
+            return False
+
         try:
-            context_state.restore()
+            data_count = len(target.color_attr.data)
         except Exception:
-            pass
-        self._context_state = None
+            data_count = 0
+        if data_count != expected_count:
+            try:
+                self.report(
+                    {"WARNING"},
+                    tr_format(
+                        "Color data count changed during directional lighting. Expected {expected}, got {actual}.",
+                        expected=expected_count,
+                        actual=data_count,
+                    ),
+                )
+            except Exception:
+                pass
+            return False
+
+        self.color_attr = target.color_attr
+        return True
+
+    def _should_update_overlay(self, mouse_pos):
+        if getattr(self, "_live_write_enabled", True):
+            return True
+
+        now = time.perf_counter()
+        last_time = getattr(self, "_last_overlay_time", 0.0)
+        if now - last_time < LARGE_MESH_OVERLAY_INTERVAL:
+            return False
+
+        last_pos = getattr(self, "_last_overlay_mouse_pos", None)
+        if last_pos is not None and mouse_pos is not None:
+            dx = mouse_pos[0] - last_pos[0]
+            dy = mouse_pos[1] - last_pos[1]
+            if (dx * dx + dy * dy) < LARGE_MESH_OVERLAY_MOUSE_THRESHOLD_SQ:
+                return False
+
+        self._last_overlay_time = now
+        self._last_overlay_mouse_pos = mouse_pos
+        return True
+
+    def _update_overlay_mouse(self, context, mouse_pos, *, force=False):
+        if force or self._should_update_overlay(mouse_pos):
+            self._draw_state["mouse_pos"] = mouse_pos
+            if context.area:
+                context.area.tag_redraw()
+            return True
+        return False
+
+    def _refresh_color_display(self, context, colors):
+        channel_key = getattr(context.scene, "ylvc_channel", "RGB")
+        if channel_key == "RGB":
+            return
+        display.finish_color_write(
+            context,
+            self.mesh,
+            getattr(self, "layer_name", self.color_attr.name),
+            obj=self.obj,
+            ensure_preview=False,
+            source_colors=colors,
+            defer_preview_sync=True,
+        )
 
     def _finish(self, context):
         if getattr(self, "_handle", None) is not None:
@@ -375,7 +465,8 @@ class MESH_OT_VCM_TestDirectionalMask(bpy.types.Operator):
                 bpy.types.SpaceView3D.draw_handler_remove(self._handle, "WINDOW")
             except Exception:
                 pass
-            self._handle = None
+            finally:
+                self._handle = None
 
         if hasattr(context.scene, "ylvc_is_tracing"):
             context.scene.ylvc_is_tracing = False
@@ -388,30 +479,10 @@ class MESH_OT_VCM_TestDirectionalMask(bpy.types.Operator):
         except Exception:
             pass
 
-        self._restore_initial_context(context)
-
         if context.area:
             context.area.tag_redraw()
 
 
-# ==========================================
-# Registration
-# ==========================================
-
 classes = (
-    MESH_OT_VCM_TestDirectionalMask,
+    MESH_OT_YLVCLightMask,
 )
-
-
-def register():
-    for cls in classes:
-        bpy.utils.register_class(cls)
-
-
-def unregister():
-    for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
-
-
-if __name__ == "__main__":
-    register()

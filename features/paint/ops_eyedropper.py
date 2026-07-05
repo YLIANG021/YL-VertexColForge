@@ -4,9 +4,8 @@
 import bpy
 from bpy_extras import view3d_utils
 
-from ... import utils
 from ...core.color_channels import clamp_factor, sample_channel_value
-from ...core.context import resolve_target_color_attribute
+from ...core.color_attribute import resolve_target_color_attribute
 from ...core.mesh_color_sampling import sample_hit_color
 from ...core.operator_poll import active_mesh_has_color_attributes
 from ...i18n import tr
@@ -63,24 +62,19 @@ def _normalize_sampled_rgba(sampled_rgba):
 
 def _snapshot_brush_value(context):
     scene = context.scene
-    holder = utils.get_color_holder(context)
     return {
-        "holder": holder,
-        "fg_rgb": tuple(holder.color[:3]) if holder is not None else None,
+        "fg_rgb": tuple(getattr(scene, "ylvc_fill_rgb_fg", (1.0, 1.0, 1.0))),
         "single_fg": getattr(scene, "ylvc_single_fg", 1.0),
         "alpha_fg": getattr(scene, "ylvc_alpha_fg", 1.0),
-        "pure_fg": tuple(getattr(scene, "ylvc_pure_fg_values", (1.0, 1.0, 1.0))),
     }
 
 
 def _restore_brush_value(context, snapshot):
     scene = context.scene
-    holder = snapshot.get("holder")
-    if holder is not None and snapshot.get("fg_rgb") is not None:
-        try:
-            holder.color = snapshot["fg_rgb"]
-        except Exception:
-            pass
+    try:
+        scene.ylvc_fill_rgb_fg = snapshot["fg_rgb"]
+    except Exception:
+        pass
     try:
         scene.ylvc_single_fg = snapshot["single_fg"]
     except Exception:
@@ -89,25 +83,18 @@ def _restore_brush_value(context, snapshot):
         scene.ylvc_alpha_fg = snapshot["alpha_fg"]
     except Exception:
         pass
-    try:
-        scene.ylvc_pure_fg_values = snapshot["pure_fg"]
-    except Exception:
-        pass
 
 
 def _apply_sampled_color_to_brush(context, sampled_rgba):
     scene = context.scene
     channel_key = getattr(scene, "ylvc_channel", "RGB")
-    holder = utils.get_color_holder(context)
 
     if channel_key == "RGB":
-        if holder is None:
-            return False
-        utils.set_holder_rgb_colors(holder, sampled_rgba[:3])
         try:
+            scene.ylvc_fill_rgb_fg = tuple(sampled_rgba[:3])
             scene.ylvc_alpha_fg = sampled_rgba[3]
         except Exception:
-            pass
+            return False
         return True
 
     if channel_key == "A":
@@ -150,11 +137,16 @@ class MESH_OT_YLVCBrushEyedropper(bpy.types.Operator):
             return {"CANCELLED"}
 
         self._context_transaction = transactions.ObjectContextTransaction(context)
-        if obj.mode != "OBJECT" and not transactions.ensure_object_mode_for(context, obj):
-            self.report({"WARNING"}, tr("Could not switch to Object Mode for color sampling."))
-            return {"CANCELLED"}
+        if obj.mode != "OBJECT":
+            try:
+                switched = transactions.ensure_object_mode_for(context, obj)
+            except RuntimeError:
+                switched = False
+            if not switched:
+                self.report({"WARNING"}, tr("Could not switch to Object Mode for color sampling."))
+                return {"CANCELLED"}
 
-        target, error = resolve_target_color_attribute(context)
+        target, error = resolve_target_color_attribute(context, activate=False)
         if error:
             self._restore_started_mode(context)
             self.report({"WARNING"}, error)

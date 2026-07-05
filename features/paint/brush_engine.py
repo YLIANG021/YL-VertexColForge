@@ -7,7 +7,6 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.kdtree import KDTree
 
-from ... import utils
 from ...core.blend import blend_colors_np
 from ...core.color_attribute import read_color_attribute_colors
 from ...core.color_channels import channel_indices, clamp_factor, normalize_write_value
@@ -15,6 +14,57 @@ from ...core.mesh_topology import loop_vertex_indices, vertex_positions
 
 
 SPATIAL_INDEX_MIN_SIZE = 50000
+
+_BVH_CACHE = {"key": None, "value": None}
+_PAINT_POSITION_CACHE = {"key": None, "value": None}
+_SPATIAL_INDEX_CACHE = {"key": None, "positions": None, "value": None}
+
+
+def _safe_pointer(item):
+    try:
+        return item.as_pointer() if item is not None else 0
+    except (AttributeError, ReferenceError):
+        return 0
+
+
+def _rounded_float_tuple(values, digits=6):
+    return tuple(round(float(value), digits) for value in values)
+
+
+def _matrix_signature(matrix):
+    try:
+        return _rounded_float_tuple((value for row in matrix for value in row))
+    except Exception:
+        return ()
+
+
+def _bounds_signature(obj):
+    try:
+        return _rounded_float_tuple((value for corner in obj.bound_box for value in corner))
+    except Exception:
+        return ()
+
+
+def _mesh_signature(obj):
+    mesh = getattr(obj, "data", None)
+    if mesh is None:
+        return None
+    return (
+        _safe_pointer(mesh),
+        len(mesh.vertices),
+        len(mesh.edges),
+        len(mesh.polygons),
+        len(mesh.loops),
+        _bounds_signature(obj),
+    )
+
+
+def _paint_position_cache_key(obj, domain):
+    return (
+        _mesh_signature(obj),
+        _matrix_signature(getattr(obj, "matrix_world", None)),
+        domain,
+    )
 
 
 def brush_falloff(values, hardness):
@@ -51,30 +101,55 @@ def build_bvh(mesh):
     return BVHTree.FromPolygons(verts, polygons)
 
 
+def build_bvh_for_object(obj):
+    if obj is None or getattr(obj, "type", None) != "MESH":
+        return None
+
+    key = _mesh_signature(obj)
+    if key is not None and _BVH_CACHE["key"] == key:
+        return _BVH_CACHE["value"]
+
+    bvh = build_bvh(obj.data)
+    _BVH_CACHE["key"] = key
+    _BVH_CACHE["value"] = bvh
+    return bvh
+
+
 def current_brush_value(context):
     scene = context.scene
     channel_key = scene.ylvc_channel
-    holder = utils.get_color_holder(context)
-    if holder is None:
-        return None
 
     if channel_key == "RGB":
-        return (holder.color[0], holder.color[1], holder.color[2], scene.ylvc_alpha_fg)
+        color = getattr(scene, "ylvc_fill_rgb_fg", (1.0, 1.0, 1.0))
+        return (color[0], color[1], color[2], scene.ylvc_alpha_fg)
+    if channel_key == "A":
+        return scene.ylvc_alpha_fg
     return scene.ylvc_single_fg
 
 
 def build_paint_cache(obj, color_attr, domain):
     colors = read_color_attribute_colors(obj.data, color_attr)
+    key = _paint_position_cache_key(obj, domain)
+    if _PAINT_POSITION_CACHE["key"] == key:
+        world_positions, data_positions = _PAINT_POSITION_CACHE["value"]
+        return colors, world_positions, data_positions
+
     world_positions = mesh_world_positions(obj)
     if domain == "POINT":
         data_positions = world_positions
     else:
         loop_indices = loop_vertex_indices(obj.data)
         data_positions = world_positions[loop_indices] if len(loop_indices) else np.zeros((0, 3), dtype=np.float32)
+
+    _PAINT_POSITION_CACHE["key"] = key
+    _PAINT_POSITION_CACHE["value"] = (world_positions, data_positions)
     return colors, world_positions, data_positions
 
 
 def paintable_data_subset(data_positions, selection_mask):
+    if selection_mask.size == len(data_positions) and bool(np.all(selection_mask)):
+        return np.arange(len(data_positions), dtype=np.int64), data_positions
+
     indices = np.flatnonzero(selection_mask)
     if len(indices) == 0:
         empty = np.zeros((0, 3), dtype=np.float32)
@@ -86,39 +161,39 @@ def build_position_spatial_index(positions, min_size=SPATIAL_INDEX_MIN_SIZE):
     if positions is None or len(positions) < int(min_size):
         return None
 
+    cache_key = (
+        id(positions),
+        getattr(positions, "shape", None),
+        getattr(positions, "strides", None),
+    )
+    if _SPATIAL_INDEX_CACHE["key"] == cache_key and _SPATIAL_INDEX_CACHE["positions"] is positions:
+        return _SPATIAL_INDEX_CACHE["value"]
+
     tree = KDTree(len(positions))
     for index, position in enumerate(positions):
         tree.insert((float(position[0]), float(position[1]), float(position[2])), index)
     tree.balance()
+    _SPATIAL_INDEX_CACHE["key"] = cache_key
+    _SPATIAL_INDEX_CACHE["positions"] = positions
+    _SPATIAL_INDEX_CACHE["value"] = tree
     return tree
 
 
-def _surface_tangent(normal):
-    normal = Vector(normal).normalized()
-    reference = Vector((0.0, 0.0, 1.0))
-    if abs(normal.dot(reference)) > 0.96:
-        reference = Vector((1.0, 0.0, 0.0))
-    return normal.cross(reference).normalized()
-
-
-def world_radius_for_screen_radius(region, region_data, center, normal, screen_radius):
-    if region is None or region_data is None or center is None or normal is None:
+def view_depth_world_radius_for_screen_radius(region, region_data, center, screen_radius):
+    if region is None or region_data is None or center is None:
         return 0.0
     screen_radius = max(float(screen_radius), 0.0)
     if screen_radius <= 0.0:
         return 0.0
 
     center = Vector(center)
-    tangent = _surface_tangent(normal)
     center_2d = view3d_utils.location_3d_to_region_2d(region, region_data, center)
-    unit_edge_2d = view3d_utils.location_3d_to_region_2d(region, region_data, center + tangent)
-    if center_2d is None or unit_edge_2d is None:
+    if center_2d is None:
         return 0.0
 
-    pixels_per_world_unit = (unit_edge_2d - center_2d).length
-    if pixels_per_world_unit <= 1e-6:
-        return 0.0
-    return max(screen_radius / pixels_per_world_unit, 1e-6)
+    edge_2d = center_2d + Vector((screen_radius, 0.0))
+    edge_world = view3d_utils.region_2d_to_location_3d(region, region_data, edge_2d, center)
+    return max((edge_world - center).length, 1e-6)
 
 
 def world_brush_indices(positions, hit_world, radius, spatial_index=None):
@@ -175,6 +250,7 @@ def paint_at_hit(
     channel_key,
     radius=None,
     undo_recorder=None,
+    painted_indices_out=None,
 ):
     if hit_world is None or data_positions.size == 0:
         return 0
@@ -195,6 +271,8 @@ def paint_at_hit(
         return 0
 
     active_indices = data_indices[local_indices]
+    if painted_indices_out is not None and len(active_indices) > 0:
+        painted_indices_out.append(active_indices.copy())
 
     _capture_undo_colors(colors, active_indices, undo_recorder)
     falloff = 1.0 - np.clip(distances / radius, 0.0, 1.0)

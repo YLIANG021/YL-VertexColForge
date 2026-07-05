@@ -7,16 +7,16 @@ import bpy
 import numpy as np
 from bpy_extras import view3d_utils
 
-from ... import utils
 from ...core.color_attribute import read_color_attribute_colors
-from ...core.context import resolve_target_color_attribute
+from ...core.color_attribute import resolve_target_color_attribute
+from ...core.color_channels import CHANNEL_COMPONENTS, clamp_factor, sample_channel_value
 from ...core.mesh_color_sampling import sample_hit_color
 from ...core.mesh_topology import loop_vertex_indices, vertex_positions
 from ...core.operator_poll import active_mesh_has_color_attributes
 from ...i18n import tr
 from ...services import transactions
 from . import overlay
-from .ops_fill_select import build_color_match_mask, build_corner_vertex_match_mask, clear_edge_face_selection
+from .ops_fill_select import build_corner_vertex_match_mask
 
 PICK_SELECT_START_TOLERANCE = 0.0
 PICK_SELECT_ZERO_SNAP_RADIUS = 10.0
@@ -27,10 +27,18 @@ PREVIEW_FACE_COLOR = np.array((1.0, 0.78, 0.08, 0.34), dtype=np.float32)
 def _sync_picked_value_to_selection_input(context, sampled_rgba, picked_value):
     channel_key = getattr(context.scene, "ylvc_channel", "RGB")
     if channel_key == "RGB":
-        holder = utils.get_color_holder(context)
-        if holder:
-            utils.set_holder_rgb_colors(holder, sampled_rgba[:3])
+        try:
+            context.scene.ylvc_fill_rgb_fg = tuple(sampled_rgba[:3])
+            context.scene.ylvc_alpha_fg = float(sampled_rgba[3])
+        except Exception:
+            pass
         return
+
+    if channel_key == "A":
+        try:
+            context.scene.ylvc_alpha_fg = float(picked_value)
+        except Exception:
+            pass
 
     try:
         context.scene.ylvc_single_fg = float(picked_value)
@@ -68,8 +76,10 @@ def _restore_mesh_selection_state(obj, state):
 
     if restore_edit_mode:
         try:
-            transactions.ensure_object_mode_for(bpy.context, obj)
+            switched = transactions.ensure_object_mode_for(bpy.context, obj)
         except RuntimeError:
+            switched = False
+        if not switched:
             bm = bmesh.from_edit_mesh(mesh)
             for index, vert in enumerate(bm.verts):
                 vert.select = bool(state["vertex"][index]) if index < len(state["vertex"]) else False
@@ -101,7 +111,7 @@ def _drag_distance_to_tolerance(drag_distance, base_tolerance=0.0):
         return 0.0
 
     effective_distance = drag_distance - PICK_SELECT_ZERO_SNAP_RADIUS
-    return utils.clamp_factor(float(base_tolerance) + (effective_distance / PICK_SELECT_TOLERANCE_DRAG_SCALE))
+    return clamp_factor(float(base_tolerance) + (effective_distance / PICK_SELECT_TOLERANCE_DRAG_SCALE))
 
 
 class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
@@ -155,12 +165,14 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
 
         if active_obj.mode != "OBJECT":
             try:
-                transactions.ensure_object_mode_for(context, active_obj)
-            except RuntimeError as exc:
-                self.report({"WARNING"}, str(exc))
+                switched = transactions.ensure_object_mode_for(context, active_obj)
+            except RuntimeError:
+                switched = False
+            if not switched:
+                self.report({"WARNING"}, tr("Could not switch to Object Mode for color sampling."))
                 return {"CANCELLED"}
 
-        target, error = resolve_target_color_attribute(context)
+        target, error = resolve_target_color_attribute(context, activate=False)
         if error:
             self._context_state.restore()
             self.report({"WARNING"}, error)
@@ -203,7 +215,10 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
                 pass
 
         context.window_manager.modal_handler_add(self)
-        context.workspace.status_text_set(tr("Click a mesh color, keep holding LMB, then drag away from the pick point to adjust tolerance."))
+        try:
+            context.workspace.status_text_set(tr("Click a mesh color, keep holding LMB, then drag away from the pick point to adjust tolerance."))
+        except Exception:
+            pass
         return {"RUNNING_MODAL"}
 
     def modal(self, context, event):
@@ -243,7 +258,10 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
 
                 self._state = "ADJUSTING"
                 self._update_object_preview()
-                context.workspace.status_text_set(tr("Drag away from the pick point to increase tolerance. Release LMB to confirm. RMB or Esc cancels."))
+                try:
+                    context.workspace.status_text_set(tr("Drag away from the pick point to increase tolerance. Release LMB to confirm. RMB or Esc cancels."))
+                except Exception:
+                    pass
             return {"RUNNING_MODAL"}
 
         if self._state == "ADJUSTING":
@@ -308,7 +326,7 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
         if sampled_rgba is None:
             return None, None, tr("Could not sample color from the clicked surface.")
 
-        sampled_rgba = [utils.clamp_factor(component) for component in sampled_rgba[:4]]
+        sampled_rgba = [clamp_factor(component) for component in sampled_rgba[:4]]
         while len(sampled_rgba) < 4:
             sampled_rgba.append(1.0 if len(sampled_rgba) == 3 else 0.0)
 
@@ -316,7 +334,7 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
         if channel_key == "RGB":
             picked_value = sampled_rgba
         else:
-            picked_value = utils.sample_channel_value(sampled_rgba, channel_key)
+            picked_value = sample_channel_value(sampled_rgba, channel_key)
 
         swatch = (sampled_rgba[0], sampled_rgba[1], sampled_rgba[2], 1.0)
         return picked_value, swatch, None
@@ -328,7 +346,7 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
         self._preview_layer_name = color_attr.name
         self._preview_domain = color_attr.domain
         self._preview_channel = getattr(context.scene, "ylvc_channel", "RGB")
-        self._preview_channel_indices = list(utils.CHANNEL_COMPONENTS[self._preview_channel])
+        self._preview_channel_indices = list(CHANNEL_COMPONENTS[self._preview_channel])
         self._preview_vert_count = len(mesh.vertices)
 
         self._preview_colors = read_color_attribute_colors(mesh, color_attr)
@@ -357,13 +375,21 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
         if not self._preview_cache_ready or self._picked_value is None:
             return np.zeros(0, dtype=bool)
 
+        colors = self._preview_colors
         tolerance = self._current_tolerance
-        match_mask = build_color_match_mask(
-            self._preview_colors,
-            self._picked_value,
-            self._preview_channel_indices,
-            tolerance,
-        )
+        channel_indices = self._preview_channel_indices
+        is_color = isinstance(self._picked_value, (list, tuple))
+
+        if is_color:
+            target_arr = np.array(
+                self._picked_value if len(self._picked_value) == 4 else [self._picked_value[0], self._picked_value[1], self._picked_value[2], 1.0],
+                dtype=np.float32,
+            )
+            diff = np.abs(colors[:, channel_indices] - target_arr[channel_indices])
+            match_mask = np.all(diff <= tolerance, axis=1)
+        else:
+            sampled = np.mean(colors[:, channel_indices], axis=1)
+            match_mask = np.abs(sampled - float(self._picked_value)) <= tolerance
 
         if self._preview_domain == "POINT":
             return match_mask
@@ -402,8 +428,12 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
             vertex_mask = self._compute_vertex_mask()
             self._current_vertex_mask = vertex_mask
 
+        edge_mask = np.zeros(len(obj.data.edges), dtype=bool)
+        face_mask = np.zeros(len(obj.data.polygons), dtype=bool)
+
         obj.data.vertices.foreach_set("select", vertex_mask)
-        clear_edge_face_selection(obj.data)
+        obj.data.edges.foreach_set("select", edge_mask)
+        obj.data.polygons.foreach_set("select", face_mask)
         obj.data.update()
 
         try:
@@ -430,7 +460,7 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
         scene = getattr(context, "scene", None)
         if scene is None:
             return
-        tolerance = utils.clamp_factor(self._current_tolerance)
+        tolerance = clamp_factor(self._current_tolerance)
         if self._last_synced_tolerance is not None and abs(self._last_synced_tolerance - tolerance) < 0.001:
             return
         try:
@@ -441,7 +471,7 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
 
     def _cancel(self, context):
         try:
-            context.scene.ylvc_select_tolerance = utils.clamp_factor(self._old_select_tolerance)
+            context.scene.ylvc_select_tolerance = clamp_factor(self._old_select_tolerance)
         except Exception:
             pass
         self._restore_original_state(context)
@@ -459,17 +489,26 @@ class MESH_OT_YLVCPickSelectValue(bpy.types.Operator):
 
     def _finish(self, context):
         if getattr(self, "_handle", None) is not None:
-            bpy.types.SpaceView3D.draw_handler_remove(self._handle, "WINDOW")
+            try:
+                bpy.types.SpaceView3D.draw_handler_remove(self._handle, "WINDOW")
+            except Exception:
+                pass
             self._handle = None
         if getattr(self, "_surface_handle", None) is not None:
-            bpy.types.SpaceView3D.draw_handler_remove(self._surface_handle, "WINDOW")
+            try:
+                bpy.types.SpaceView3D.draw_handler_remove(self._surface_handle, "WINDOW")
+            except Exception:
+                pass
             self._surface_handle = None
         if context.window is not None:
             try:
                 context.window.cursor_modal_restore()
             except Exception:
                 pass
-        context.workspace.status_text_set(None)
+        try:
+            context.workspace.status_text_set(None)
+        except Exception:
+            pass
         self._draw_state["visible"] = False
         if hasattr(self, "_surface_draw_state"):
             self._surface_draw_state["visible"] = False

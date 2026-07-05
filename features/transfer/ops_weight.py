@@ -2,12 +2,13 @@
 import bpy
 import numpy as np
 
-from ... import utils
 from ...core.channel_sampling import SOURCE_CHANNELS, sample_scalar_from_colors
 from ...core.color_attribute import read_color_attribute_colors
 from ...core.color_channels import CHANNEL_COMPONENTS
-from ...core.context import resolve_selection_scope, resolve_target_color_attribute
+from ...core.color_attribute import resolve_target_color_attribute
+from ...core.selection_scope import resolve_selection_scope
 from ...core.mesh_topology import average_loop_values_to_vertices, loop_vertex_indices
+from ...core.vertex_groups import assign_vertex_group_weights, get_vertex_group_weights
 from ...core.write_engine import blend_source_values_into_colors, write_color_array_to_attribute
 from ...i18n import tr, tr_format
 from ...services import display, transactions
@@ -45,12 +46,12 @@ def _get_selected_or_active_vertex_group(obj, group_name):
 
 
 def _get_vertex_group_weights(obj, vertex_count, group):
-    return utils.get_vertex_group_weights(obj, group, vertex_count=vertex_count)
+    return get_vertex_group_weights(obj, group, vertex_count=vertex_count)
 
 
 class MESH_OT_YLVCColorToWeights(bpy.types.Operator):
     bl_idname = "mesh.ylvc_color_to_weights"
-    bl_label = "Colors to Weights"
+    bl_label = "Write Weights"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -59,86 +60,90 @@ class MESH_OT_YLVCColorToWeights(bpy.types.Operator):
         return obj is not None and obj.type == "MESH"
 
     def execute(self, context):
+        def run():
+            return self._execute_impl(context)
+
+        return transactions.execute_with_context_restore(context, run)
+
+    def _execute_impl(self, context):
         obj = context.active_object
         if not obj or obj.type != "MESH":
             self.report({"WARNING"}, tr("Please select a mesh object."))
             return {"CANCELLED"}
 
-        with transactions.CleanupStack() as cleanup:
-            cleanup.push_object_context(context)
-            transactions.ensure_object_mode_for(context, obj)
-            mesh = obj.data
-            scene = context.scene
-            target, error = resolve_target_color_attribute(context)
-            if error:
-                self.report({"WARNING"}, error)
-                return {"CANCELLED"}
-            attribute = target.color_attr
+        transactions.ensure_object_mode_for(context, obj)
+        mesh = obj.data
+        scene = context.scene
+        target, error = resolve_target_color_attribute(context, activate=False)
+        if error:
+            self.report({"WARNING"}, error)
+            return {"CANCELLED"}
+        attribute = target.color_attr
 
-            if attribute.domain not in {"POINT", "CORNER"}:
-                self.report({"WARNING"}, tr_format("Unsupported color domain: {domain}", domain=attribute.domain))
-                return {"CANCELLED"}
+        if attribute.domain not in {"POINT", "CORNER"}:
+            self.report({"WARNING"}, tr_format("Unsupported color domain: {domain}", domain=attribute.domain))
+            return {"CANCELLED"}
 
-            source_mode = getattr(scene, "ylvc_weight_source", "RGB")
-            if source_mode not in SOURCE_CHANNELS:
-                self.report({"WARNING"}, tr("Invalid weight source."))
-                return {"CANCELLED"}
+        source_mode = getattr(scene, "ylvc_weight_source", "RGB")
+        if source_mode not in SOURCE_CHANNELS:
+            self.report({"WARNING"}, tr("Invalid weight source."))
+            return {"CANCELLED"}
 
-            group, group_name = _ensure_vertex_group(obj, getattr(scene, "ylvc_weight_group_name", "Weights"))
+        group, group_name = _ensure_vertex_group(obj, getattr(scene, "ylvc_weight_group_name", "Weights"))
 
-            selection_scope = resolve_selection_scope(context, attribute)
-            vertex_mask = selection_scope.vertex_mask
-            if vertex_mask.size == 0:
-                self.report({"WARNING"}, tr("Mesh has no vertices."))
-                return {"CANCELLED"}
+        selection_scope = resolve_selection_scope(context, attribute)
+        vertex_mask = selection_scope.vertex_mask
+        if vertex_mask.size == 0:
+            self.report({"WARNING"}, tr("Mesh has no vertices."))
+            return {"CANCELLED"}
 
-            if attribute.domain == "POINT":
-                colors = read_color_attribute_colors(mesh, attribute)
-                weights = sample_scalar_from_colors(colors, source_mode, rgb_mode="luminance")
-                valid_mask = vertex_mask
-            else:
-                loop_count = len(mesh.loops)
-                if loop_count == 0:
-                    self.report({"WARNING"}, tr("Mesh has no loops."))
-                    return {"CANCELLED"}
-
-                loop_vert_indices = loop_vertex_indices(mesh)
-                loop_mask = selection_scope.data_mask
-                if not np.any(loop_mask):
-                    self.report({"WARNING"}, tr("No loops match the current selection."))
-                    return {"CANCELLED"}
-
-                colors = read_color_attribute_colors(mesh, attribute)
-
-                loop_weights = sample_scalar_from_colors(colors, source_mode, rgb_mode="luminance")
-                weights, valid = average_loop_values_to_vertices(loop_weights, loop_vert_indices, len(mesh.vertices), loop_mask)
-                valid_mask = valid & vertex_mask
-
-            if not np.any(valid_mask):
-                self.report({"WARNING"}, tr("No vertices match the current selection."))
+        if attribute.domain == "POINT":
+            colors = read_color_attribute_colors(mesh, attribute)
+            weights = sample_scalar_from_colors(colors, source_mode, rgb_mode="luminance")
+            valid_mask = vertex_mask
+        else:
+            loop_count = len(mesh.loops)
+            if loop_count == 0:
+                self.report({"WARNING"}, tr("Mesh has no loops."))
                 return {"CANCELLED"}
 
-            target_indices = np.flatnonzero(valid_mask).astype(np.int32, copy=False)
-            utils.assign_vertex_group_weights(group, target_indices, weights[target_indices])
+            loop_vert_indices = loop_vertex_indices(mesh)
+            loop_mask = selection_scope.data_mask
+            if not np.any(loop_mask):
+                self.report({"WARNING"}, tr("No loops match the current selection."))
+                return {"CANCELLED"}
 
-            if context.area:
-                context.area.tag_redraw()
+            colors = read_color_attribute_colors(mesh, attribute)
 
-            self.report(
-                {"INFO"},
-                tr_format(
-                    "Wrote {count} weights to '{group_name}' from {source_mode}.",
-                    count=len(target_indices),
-                    group_name=group_name,
-                    source_mode=source_mode,
-                ),
-            )
-            return {"FINISHED"}
+            loop_weights = sample_scalar_from_colors(colors, source_mode, rgb_mode="luminance")
+            weights, valid = average_loop_values_to_vertices(loop_weights, loop_vert_indices, len(mesh.vertices), loop_mask)
+            valid_mask = valid & vertex_mask
+
+        if not np.any(valid_mask):
+            self.report({"WARNING"}, tr("No vertices match the current selection."))
+            return {"CANCELLED"}
+
+        target_indices = np.flatnonzero(valid_mask).astype(np.int32, copy=False)
+        assign_vertex_group_weights(group, target_indices, weights[target_indices])
+
+        if context.area:
+            context.area.tag_redraw()
+
+        self.report(
+            {"INFO"},
+            tr_format(
+                "Wrote {count} weights to '{group_name}' from {source_mode}.",
+                count=len(target_indices),
+                group_name=group_name,
+                source_mode=source_mode,
+            ),
+        )
+        return {"FINISHED"}
 
 
 class MESH_OT_YLVCWeightsToColor(bpy.types.Operator):
     bl_idname = "mesh.ylvc_weights_to_color"
-    bl_label = "Weights to Colors"
+    bl_label = "Weights to Channel"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -147,89 +152,99 @@ class MESH_OT_YLVCWeightsToColor(bpy.types.Operator):
         return obj is not None and obj.type == "MESH" and len(obj.vertex_groups) > 0
 
     def execute(self, context):
+        def run():
+            return self._execute_impl(context)
+
+        return transactions.execute_with_context_restore(context, run)
+
+    def _execute_impl(self, context):
         obj = context.active_object
         if not obj or obj.type != "MESH":
             self.report({"WARNING"}, tr("Please select a mesh object."))
             return {"CANCELLED"}
 
-        with transactions.CleanupStack() as cleanup:
-            cleanup.push_object_context(context)
-            transactions.ensure_object_mode_for(context, obj)
-            mesh = obj.data
-            scene = context.scene
-            target, error = resolve_target_color_attribute(context)
-            if error:
-                self.report({"WARNING"}, error)
+        transactions.ensure_object_mode_for(context, obj)
+        mesh = obj.data
+        scene = context.scene
+        target, error = resolve_target_color_attribute(context)
+        if error:
+            self.report({"WARNING"}, error)
+            return {"CANCELLED"}
+        attribute = target.color_attr
+
+        if attribute.domain not in {"POINT", "CORNER"}:
+            self.report({"WARNING"}, tr_format("Unsupported color domain: {domain}", domain=attribute.domain))
+            return {"CANCELLED"}
+
+        group = _get_selected_or_active_vertex_group(obj, getattr(scene, "ylvc_weight_group_name", ""))
+        if group is None:
+            self.report({"WARNING"}, tr("No vertex group found."))
+            return {"CANCELLED"}
+
+        channel_key = getattr(scene, "ylvc_channel", "RGB")
+        if channel_key not in CHANNEL_COMPONENTS:
+            self.report({"WARNING"}, tr("Invalid write channel."))
+            return {"CANCELLED"}
+
+        selection_scope = resolve_selection_scope(context, attribute)
+        vertex_mask = selection_scope.vertex_mask
+        if vertex_mask.size == 0:
+            self.report({"WARNING"}, tr("Mesh has no vertices."))
+            return {"CANCELLED"}
+
+        weights = _get_vertex_group_weights(obj, len(mesh.vertices), group)
+
+        if attribute.domain == "POINT":
+            colors = read_color_attribute_colors(mesh, attribute)
+
+            valid_mask = vertex_mask
+            if not np.any(valid_mask):
+                self.report({"WARNING"}, tr("No vertices match the current selection."))
                 return {"CANCELLED"}
-            attribute = target.color_attr
 
-            if attribute.domain not in {"POINT", "CORNER"}:
-                self.report({"WARNING"}, tr_format("Unsupported color domain: {domain}", domain=attribute.domain))
+            blend_source_values_into_colors(colors, weights, channel_key, "REPLACE", valid_mask)
+            write_color_array_to_attribute(attribute, colors, update_mesh=False)
+            affected = int(np.sum(valid_mask))
+        else:
+            loop_count = len(mesh.loops)
+            if loop_count == 0:
+                self.report({"WARNING"}, tr("Mesh has no loops."))
                 return {"CANCELLED"}
 
-            group = _get_selected_or_active_vertex_group(obj, getattr(scene, "ylvc_weight_group_name", ""))
-            if group is None:
-                self.report({"WARNING"}, tr("No vertex group found."))
+            loop_vert_indices = loop_vertex_indices(mesh)
+            loop_mask = selection_scope.data_mask
+            if not np.any(loop_mask):
+                self.report({"WARNING"}, tr("No loops match the current selection."))
                 return {"CANCELLED"}
 
-            channel_key = getattr(scene, "ylvc_channel", "RGB")
-            if channel_key not in CHANNEL_COMPONENTS:
-                self.report({"WARNING"}, tr("Invalid write channel."))
-                return {"CANCELLED"}
+            colors = read_color_attribute_colors(mesh, attribute)
 
-            selection_scope = resolve_selection_scope(context, attribute)
-            vertex_mask = selection_scope.vertex_mask
-            if vertex_mask.size == 0:
-                self.report({"WARNING"}, tr("Mesh has no vertices."))
-                return {"CANCELLED"}
+            loop_weights = weights[loop_vert_indices]
+            blend_source_values_into_colors(colors, loop_weights, channel_key, "REPLACE", loop_mask)
+            write_color_array_to_attribute(attribute, colors, update_mesh=False)
+            affected = int(np.sum(loop_mask))
 
-            weights = _get_vertex_group_weights(obj, len(mesh.vertices), group)
+        display.finish_color_write(
+            context,
+            mesh,
+            attribute.name,
+            obj=obj,
+            source_colors=colors,
+            defer_preview_sync=True,
+        )
+        if context.area:
+            context.area.tag_redraw()
 
-            if attribute.domain == "POINT":
-                colors = read_color_attribute_colors(mesh, attribute)
-
-                valid_mask = vertex_mask
-                if not np.any(valid_mask):
-                    self.report({"WARNING"}, tr("No vertices match the current selection."))
-                    return {"CANCELLED"}
-
-                blend_source_values_into_colors(colors, weights, channel_key, "REPLACE", valid_mask)
-                write_color_array_to_attribute(attribute, colors, update_mesh=False)
-                affected = int(np.sum(valid_mask))
-            else:
-                loop_count = len(mesh.loops)
-                if loop_count == 0:
-                    self.report({"WARNING"}, tr("Mesh has no loops."))
-                    return {"CANCELLED"}
-
-                loop_vert_indices = loop_vertex_indices(mesh)
-                loop_mask = selection_scope.data_mask
-                if not np.any(loop_mask):
-                    self.report({"WARNING"}, tr("No loops match the current selection."))
-                    return {"CANCELLED"}
-
-                colors = read_color_attribute_colors(mesh, attribute)
-
-                loop_weights = weights[loop_vert_indices]
-                blend_source_values_into_colors(colors, loop_weights, channel_key, "REPLACE", loop_mask)
-                write_color_array_to_attribute(attribute, colors, update_mesh=False)
-                affected = int(np.sum(loop_mask))
-
-            mesh.update()
-            display.refresh_after_color_write(context, mesh, attribute.name, obj=obj)
-            if context.area:
-                context.area.tag_redraw()
-
-            self.report(
-                {"INFO"},
-                tr_format(
-                    "Wrote group '{group_name}' into {channel_key} for {affected} targets.",
-                    group_name=group.name,
-                    channel_key=channel_key,
-                    affected=affected,
-                ),
-            )
-            return {"FINISHED"}
+        self.report(
+            {"INFO"},
+            tr_format(
+                "Wrote group '{group_name}' into {channel_key} for {affected} targets.",
+                group_name=group.name,
+                channel_key=channel_key,
+                affected=affected,
+            ),
+        )
+        return {"FINISHED"}
 
 
 CLASSES = (MESH_OT_YLVCColorToWeights, MESH_OT_YLVCWeightsToColor)

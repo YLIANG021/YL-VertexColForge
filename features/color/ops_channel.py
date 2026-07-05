@@ -1,42 +1,83 @@
 # -*- coding: utf-8 -*-
-import bmesh
+"""Channel copy and math operators."""
+
 import bpy
 import numpy as np
 
-from ...core.channel_sampling import source_channel_index
-from ...core.color_attribute import read_color_attribute_colors
+from ...core.color_attribute import read_color_attribute_colors, write_color_attribute_colors
+from ...core.channel_sampling import RGB_LUMINANCE, source_channel_index
 from ...core.color_channels import channel_indices
-from ...core.context import resolve_edit_color_layer, resolve_selection_scope, resolve_target_color_attribute
+from ...core.color_attribute import resolve_target_color_attribute
+from ...core.selection_scope import resolve_selection_scope
 from ...core.operator_poll import active_mesh_has_color_attributes
-from ...core.write_engine import (
-    blend_source_values_into_colors,
-    read_edit_element_colors,
-    write_color_array_to_attribute,
-    write_edit_element_colors,
-)
 from ...i18n import tr, tr_format
-from ...services import display
-from ... import utils
+from ...services import display, transactions
 
 
-def _get_edit_channel_targets(bm, domain):
-    use_selection = utils.bm_use_vert_selection(bm)
-    if domain == "POINT":
-        return [vert for vert in bm.verts if utils.bm_vert_in_auto_scope(vert, use_selection)]
-    return [loop for face in bm.faces for loop in face.loops if utils.bm_vert_in_auto_scope(loop.vert, use_selection)]
+TARGET_CHANNEL_INDEX = {"R": 0, "G": 1, "B": 2, "A": 3}
 
 
-def _read_edit_channel_colors(elements, layer):
-    return read_edit_element_colors(elements, layer)
+def can_copy_channels(source_key, target_key):
+    return source_key != target_key
 
 
-def _write_edit_channel_colors(elements, layer, colors):
-    write_edit_element_colors(elements, layer, colors)
+def can_swap_channels(source_key, target_key):
+    if source_key == target_key:
+        return False
+    if source_key == "RGB" and target_key == "RGB":
+        return False
+    return True
+
+
+def _resolve_channel_context(context):
+    target, error = resolve_target_color_attribute(context)
+    if error:
+        return None, error
+
+    scene = context.scene
+    attribute = target.color_attr
+    mask = resolve_selection_scope(context, attribute).data_mask
+    if not np.any(mask):
+        return None, tr("No mesh data to process.")
+
+    return {
+        "obj": target.obj,
+        "mesh": target.mesh,
+        "attribute": attribute,
+        "layer_name": target.layer_name,
+        "source_key": getattr(scene, "ylvc_source_channel", "RGB"),
+        "target_key": getattr(scene, "ylvc_copy_target_channel", "RGB"),
+        "mask": mask,
+        "colors": read_color_attribute_colors(target.mesh, attribute),
+    }, None
+
+
+def _sample_source_values(colors, source_key):
+    if source_key == "RGB":
+        return np.clip(np.dot(colors[:, 0:3], RGB_LUMINANCE), 0.0, 1.0)
+    return colors[:, source_channel_index(source_key)]
+
+
+def _finish_channel_write(context, payload):
+    write_color_attribute_colors(payload["attribute"], payload["colors"])
+    if payload["layer_name"]:
+        display.finish_color_write(
+            context,
+            payload["mesh"],
+            payload["layer_name"],
+            obj=payload["obj"],
+            source_colors=payload["colors"],
+            defer_preview_sync=True,
+        )
+
+
+def _execute_with_context_restore(context, callback):
+    return transactions.execute_with_context_restore(context, callback)
 
 
 class MESH_OT_YLVCCopyChannel(bpy.types.Operator):
     bl_idname = "mesh.ylvc_copy_channel"
-    bl_label = "Channel Mixer"
+    bl_label = "Copy Channel"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -44,85 +85,174 @@ class MESH_OT_YLVCCopyChannel(bpy.types.Operator):
         return active_mesh_has_color_attributes(context)
 
     def execute(self, context):
-        target, error = resolve_target_color_attribute(context)
-        if error:
-            self.report({"WARNING"}, error)
-            return {"CANCELLED"}
-
-        obj = target.obj
-        mesh = target.mesh
-        attribute = target.color_attr
-        layer_name = target.layer_name
-        scene = context.scene
-
-        source_key = scene.ylvc_source_channel
-        target_key = scene.ylvc_channel
-        blend_mode = scene.ylvc_blend_mode
-        try:
-            source_index = source_channel_index(source_key)
-            channel_indices(target_key)
-        except KeyError:
-            self.report({"WARNING"}, tr("Invalid channel selection."))
-            return {"CANCELLED"}
-
-        domain = attribute.domain
-        count = 0
-
-        if obj.mode == "EDIT":
-            edit_target, error = resolve_edit_color_layer(context)
+        def run():
+            payload, error = _resolve_channel_context(context)
             if error:
                 self.report({"WARNING"}, error)
                 return {"CANCELLED"}
 
-            mesh = edit_target.mesh
-            bm = edit_target.bm
-            layer_name = edit_target.layer_name
-            layer = edit_target.layer
-            domain = edit_target.domain
-            edit_targets = _get_edit_channel_targets(bm, domain)
-            cur = _read_edit_channel_colors(edit_targets, layer)
-            if cur.size > 0:
-                source_vals = cur[:, source_index].copy()
-                blend_source_values_into_colors(cur, source_vals, target_key, blend_mode, None)
-                _write_edit_channel_colors(edit_targets, layer, cur)
-                count = len(edit_targets)
-            bmesh.update_edit_mesh(mesh)
-        else:
-            if domain not in {"POINT", "CORNER"}:
-                self.report({"WARNING"}, tr_format("Unsupported color domain: {domain}", domain=domain))
+            source_key = payload["source_key"]
+            target_key = payload["target_key"]
+            if not can_copy_channels(source_key, target_key):
+                self.report({"WARNING"}, tr("Invalid channel selection."))
+                return {"CANCELLED"}
+            try:
+                channel_indices(target_key)
+            except KeyError:
+                self.report({"WARNING"}, tr("Invalid channel selection."))
                 return {"CANCELLED"}
 
-            data_count = len(attribute.data)
-            if data_count == 0:
-                self.report({"WARNING"}, tr("No mesh data to process."))
+            colors = payload["colors"]
+            mask = payload["mask"]
+            source_values = _sample_source_values(colors, source_key)
+            if target_key == "RGB":
+                colors[mask, 0:3] = source_values[mask][:, None]
+            else:
+                target_index = TARGET_CHANNEL_INDEX[target_key]
+                colors[mask, target_index] = source_values[mask]
+            _finish_channel_write(context, payload)
+
+            self.report({"INFO"}, tr("Channel copied."))
+            return {"FINISHED"}
+
+        return _execute_with_context_restore(context, run)
+
+
+class MESH_OT_YLVCSwapChannel(bpy.types.Operator):
+    bl_idname = "mesh.ylvc_swap_channel"
+    bl_label = "Swap Channels"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return active_mesh_has_color_attributes(context)
+
+    def execute(self, context):
+        def run():
+            payload, error = _resolve_channel_context(context)
+            if error:
+                self.report({"WARNING"}, error)
                 return {"CANCELLED"}
 
-            mask = resolve_selection_scope(context, attribute).data_mask
-            cur = read_color_attribute_colors(mesh, attribute)
+            source_key = payload["source_key"]
+            target_key = payload["target_key"]
+            if not can_swap_channels(source_key, target_key):
+                self.report({"WARNING"}, tr("Invalid channel selection."))
+                return {"CANCELLED"}
 
-            if np.any(mask):
-                source_vals = cur[:, source_index].copy()
-                blend_source_values_into_colors(cur, source_vals, target_key, blend_mode, mask)
-                write_color_array_to_attribute(attribute, cur, mesh=mesh)
-                count = int(np.sum(mask))
+            colors = payload["colors"]
+            mask = payload["mask"]
 
-        if layer_name:
-            display.refresh_after_color_write(context, mesh, layer_name, obj=obj)
+            if source_key == "RGB":
+                target_index = TARGET_CHANNEL_INDEX[target_key]
+                rgb_values = colors[mask, 0:3].copy()
+                target_values = colors[mask, target_index].copy()
+                colors[mask, target_index] = np.clip(np.dot(rgb_values, RGB_LUMINANCE), 0.0, 1.0)
+                colors[mask, 0:3] = target_values[:, None]
+            elif target_key == "RGB":
+                source_index = source_channel_index(source_key)
+                source_values = colors[mask, source_index].copy()
+                rgb_values = colors[mask, 0:3].copy()
+                colors[mask, source_index] = np.clip(np.dot(rgb_values, RGB_LUMINANCE), 0.0, 1.0)
+                colors[mask, 0:3] = source_values[:, None]
+            else:
+                source_index = source_channel_index(source_key)
+                target_index = TARGET_CHANNEL_INDEX[target_key]
+                source_values = colors[mask, source_index].copy()
+                colors[mask, source_index] = colors[mask, target_index]
+                colors[mask, target_index] = source_values
 
-        self.report(
-            {"INFO"},
-            tr_format(
-                "Applied {blend_mode} from {source_key} into {target_key} for {count} {target_label}.",
-                blend_mode=blend_mode.title(),
-                source_key=source_key,
-                target_key=target_key,
-                count=count,
-                target_label=(tr("vertices") if domain == "POINT" else tr("corners")),
-            ),
-        )
-        return {"FINISHED"}
+            _finish_channel_write(context, payload)
+            self.report(
+                {"INFO"},
+                tr_format("Swapped {source_channel} and {target_channel}.", source_channel=source_key, target_channel=target_key),
+            )
+            return {"FINISHED"}
+
+        return _execute_with_context_restore(context, run)
+
+
+class MESH_OT_YLVCInvertChannel(bpy.types.Operator):
+    bl_idname = "mesh.ylvc_invert_channel"
+    bl_label = "Invert Channel"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return active_mesh_has_color_attributes(context)
+
+    def execute(self, context):
+        def run():
+            payload, error = _resolve_channel_context(context)
+            if error:
+                self.report({"WARNING"}, error)
+                return {"CANCELLED"}
+
+            target_key = getattr(context.scene, "ylvc_channel", "RGB")
+            colors = payload["colors"]
+            mask = payload["mask"]
+
+            if target_key == "RGB":
+                colors[mask, 0:3] = 1.0 - colors[mask, 0:3]
+            else:
+                target_index = TARGET_CHANNEL_INDEX[target_key]
+                colors[mask, target_index] = 1.0 - colors[mask, target_index]
+
+            _finish_channel_write(context, payload)
+            self.report({"INFO"}, tr_format("Inverted {target_channel}.", target_channel=target_key))
+            return {"FINISHED"}
+
+        return _execute_with_context_restore(context, run)
+
+
+class MESH_OT_YLVCNormalizeChannel(bpy.types.Operator):
+    bl_idname = "mesh.ylvc_normalize_channel"
+    bl_label = "Normalize Channel"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return active_mesh_has_color_attributes(context)
+
+    def execute(self, context):
+        def run():
+            payload, error = _resolve_channel_context(context)
+            if error:
+                self.report({"WARNING"}, error)
+                return {"CANCELLED"}
+
+            target_key = getattr(context.scene, "ylvc_channel", "RGB")
+            colors = payload["colors"]
+            mask = payload["mask"]
+
+            if target_key == "RGB":
+                values = colors[mask, 0:3]
+                min_value = float(np.min(values))
+                max_value = float(np.max(values))
+                if abs(max_value - min_value) <= 1e-8:
+                    self.report({"INFO"}, tr("Nothing to normalize."))
+                    return {"CANCELLED"}
+                colors[mask, 0:3] = (values - min_value) / (max_value - min_value)
+            else:
+                target_index = TARGET_CHANNEL_INDEX[target_key]
+                values = colors[mask, target_index]
+                min_value = float(np.min(values))
+                max_value = float(np.max(values))
+                if abs(max_value - min_value) <= 1e-8:
+                    self.report({"INFO"}, tr("Nothing to normalize."))
+                    return {"CANCELLED"}
+                colors[mask, target_index] = (values - min_value) / (max_value - min_value)
+
+            _finish_channel_write(context, payload)
+            self.report({"INFO"}, tr_format("Normalized {target_channel}.", target_channel=target_key))
+            return {"FINISHED"}
+
+        return _execute_with_context_restore(context, run)
 
 
 CLASSES = (
     MESH_OT_YLVCCopyChannel,
+    MESH_OT_YLVCSwapChannel,
+    MESH_OT_YLVCInvertChannel,
+    MESH_OT_YLVCNormalizeChannel,
 )

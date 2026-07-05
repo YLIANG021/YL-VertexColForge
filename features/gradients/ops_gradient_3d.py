@@ -2,31 +2,35 @@
 import math
 import time
 
-import bmesh
 import bpy
 import numpy as np
 
 from ...core.blend import blend_colors_np
 from ...core.color_attribute import read_color_attribute_colors
-from ...core.context import resolve_edit_color_layer, resolve_selection_scope, resolve_target_color_attribute
+from ...core.color_attribute import resolve_target_color_attribute
+from ...core.mesh_topology import loop_vertex_indices as cached_loop_vertex_indices
+from ...core.selection_scope import resolve_selection_scope
 from ...core.operator_poll import active_mesh_has_color_attributes, has_scene
-from ...core.selection_scope import bm_use_vert_selection
 from ...core.write_engine import (
-    blend_source_values_into_colors,
-    read_edit_element_colors,
     restore_color_array_to_attribute,
     write_color_array_to_attribute,
-    write_edit_element_colors,
 )
 from ...i18n import tr, tr_format
 from ...services import display
 from .core_color_engine import (
+    adapt_gradient_source_for_channel,
     build_ramp_lut,
-    ensure_light_ramp_node,
     ensure_ramp_node,
+    find_ramp_node,
     sample_lut_array_out,
 )
 from .core_overlay import draw_gradient_overlay_callback
+
+
+LIVE_WRITE_MAX_COLOR_ENTRIES = 150_000
+LIVE_WRITE_MAX_POLYGONS = 50_000
+LARGE_MESH_OVERLAY_INTERVAL = 1.0 / 60.0
+LARGE_MESH_OVERLAY_MOUSE_THRESHOLD_SQ = 0.0
 
 
 def _get_object_mode_layer_info(context):
@@ -37,13 +41,9 @@ def _get_object_mode_layer_info(context):
     return target.obj, (target.mesh, target.color_attr, target.domain, target.data_type, target.layer_name), None
 
 
-def _read_edit_loop_colors(loops, layer):
-    return read_edit_element_colors(loops, layer)
-
-
 class MESH_OT_YLVCInitRampData(bpy.types.Operator):
     bl_idname = "mesh.ylvc_init_ramp_data"
-    bl_label = "Create Gradient Ramp"
+    bl_label = "Create Ramp"
     bl_description = "Create the gradient ramp used by the viewport gradient tools."
     bl_options = {"REGISTER", "UNDO"}
 
@@ -59,27 +59,9 @@ class MESH_OT_YLVCInitRampData(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class MESH_OT_YLVCInitLightRampData(bpy.types.Operator):
-    bl_idname = "mesh.ylvc_init_light_ramp_data"
-    bl_label = "Create Light Ramp"
-    bl_description = "Create the gradient ramp used by the lighting tools."
-    bl_options = {"REGISTER", "UNDO"}
-
-    @classmethod
-    def poll(cls, context):
-        return has_scene(context)
-
-    def execute(self, context):
-        ensure_light_ramp_node()
-        if context.area:
-            context.area.tag_redraw()
-        self.report({"INFO"}, tr("Light ramp created."))
-        return {"FINISHED"}
-
-
 class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
     bl_idname = "mesh.ylvc_trace_ramp"
-    bl_label = "Draw Viewport Gradient"
+    bl_label = "Draw Screen Gradient"
     bl_description = "Draw a viewport gradient in the 3D View."
     bl_options = {"REGISTER", "UNDO"}
 
@@ -94,7 +76,7 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-        return active_mesh_has_color_attributes(context) and obj.mode in {"EDIT", "OBJECT"}
+        return active_mesh_has_color_attributes(context) and obj is not None
 
     @staticmethod
     def _matrix_bytes(matrix):
@@ -114,176 +96,74 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
             np.divide(tmp_t, max(length_sq, 1e-12), out=tmp_t)
         np.clip(tmp_t, 0.0, 1.0, out=tmp_t)
 
-    def _refresh_edit_projection_cache(self, context, force=False):
-        if getattr(self, "_cached_mode", None) != "EDIT":
-            return False
-        if context.region is None or context.region_data is None:
-            return False
-
-        region_size = (context.region.width, context.region.height)
-        world_bytes = self._matrix_bytes(context.active_object.matrix_world)
-        perspective_bytes = self._matrix_bytes(context.region_data.perspective_matrix)
-
-        if (
-            not force
-            and region_size == getattr(self, "_edit_cached_region_size", None)
-            and world_bytes == getattr(self, "_edit_cached_world_matrix_bytes", b"")
-            and perspective_bytes == getattr(self, "_edit_cached_perspective_matrix_bytes", b"")
-        ):
-            return True
-
-        homo = getattr(self, "_edit_homo", None)
-        if homo is None or len(homo) == 0:
-            return False
-
-        mvp_matrix = context.region_data.perspective_matrix @ context.active_object.matrix_world
-        mvp_np = np.array(mvp_matrix, dtype=np.float32)
-        clip_co = homo @ mvp_np.T
-        w_values = clip_co[:, 3]
-        valid_mask = w_values > 1e-4
-
-        pts_2d = self._edit_cached_pts_2d
-        pts_2d.fill(0.0)
-        if np.any(valid_mask):
-            ndc = clip_co[valid_mask, :2] / w_values[valid_mask, None]
-            pts_2d[valid_mask, 0] = (ndc[:, 0] + 1.0) * 0.5 * context.region.width
-            pts_2d[valid_mask, 1] = (ndc[:, 1] + 1.0) * 0.5 * context.region.height
-
-        self._edit_valid_mask[:] = valid_mask
-        self._edit_cached_region_size = region_size
-        self._edit_cached_world_matrix_bytes = world_bytes
-        self._edit_cached_perspective_matrix_bytes = perspective_bytes
-        return True
-
-    def _get_valid_edit_cache(self, context):
-        if getattr(self, "_cached_mode", None) != "EDIT":
-            return False
-        obj = context.active_object
-        if obj is None or obj.type != "MESH" or obj.mode != "EDIT":
-            return False
-        return self._refresh_edit_projection_cache(context, force=False)
-
-    def _write_edit_loop_colors(self, colors):
-        cached_loops = getattr(self, "_edit_selected_loops", None)
-        if not cached_loops:
-            return
-        layer = getattr(self, "_cached_layer", None)
-        write_edit_element_colors(cached_loops, layer, colors)
-
-    def _execute_edit_gradient_fill(self, context, obj, dx, dy, length, length_sq, is_radial, blend_mode, channel_key, is_live):
-        if not hasattr(self, "_cached_bm") or not self._get_valid_edit_cache(context):
-            return False
-
-        selected_loops = getattr(self, "_edit_selected_loops", None)
-        loop_vert_map = getattr(self, "_edit_loop_vert_map", None)
-        original_loop_colors = getattr(self, "_edit_original_loop_colors", None)
-        if not selected_loops or loop_vert_map is None or original_loop_colors is None:
-            return False
-
-        np.subtract(self._edit_cached_pts_2d[:, 0], self.start_pos[0], out=self._edit_tmp_dx_vert)
-        np.subtract(self._edit_cached_pts_2d[:, 1], self.start_pos[1], out=self._edit_tmp_dy_vert)
-        self._fill_gradient_factors(dx, dy, length, length_sq, is_radial, self._edit_tmp_dx_vert, self._edit_tmp_dy_vert, self._edit_tmp_t_vert)
-        self._edit_tmp_t_vert[~self._edit_valid_mask] = 0.0
-
-        np.take(self._edit_tmp_t_vert, loop_vert_map, out=self._edit_tmp_t_loop)
-        sample_lut_array_out(
-            self.lut,
-            self._edit_tmp_t_loop,
-            self._edit_target_rgba,
-            work_t=self._edit_lut_work_t,
-            idx0_buf=self._edit_lut_idx0,
-            idx1_buf=self._edit_lut_idx1,
-            sample0_buf=self._edit_lut_sample0,
-            sample1_buf=self._edit_lut_sample1,
-            inv_weight_buf=self._edit_lut_inv_weight,
-        )
-        np.copyto(self._edit_work_loop_colors, original_loop_colors)
-        np.take(self._edit_valid_mask, loop_vert_map, out=self._edit_loop_mask)
-        edit_loop_mask_indices = np.flatnonzero(self._edit_loop_mask).astype(np.int32, copy=False)
-        blend_colors_np(
-            self._edit_work_loop_colors,
-            self._edit_target_rgba,
-            channel_key,
-            blend_mode,
-            self._edit_loop_mask,
-            mask_indices=edit_loop_mask_indices,
-            current_buf=self._edit_blend_current,
-            gradient_buf=self._edit_blend_gradient,
-            low_mask_buf=self._edit_blend_low_mask,
-        )
-
-        self._write_edit_loop_colors(self._edit_work_loop_colors)
-        bmesh.update_edit_mesh(obj.data)
-        if not is_live:
-            display.refresh_after_color_write(
-                context,
-                obj.data,
-                getattr(self, "_cached_edit_layer_name", "") or getattr(context.scene, "ylvc_layer_name", ""),
-                obj=obj,
-            )
-            count = int(edit_loop_mask_indices.size)
-            self.report(
-                {"INFO"},
-                tr_format(
-                    "Applied a {grad_type} gradient to {count} corners.",
-                    grad_type=self.grad_type.lower(),
-                    count=count,
-                ),
-            )
-        return True
-
-    def _execute_object_gradient_fill(self, context, obj, dx, dy, length, length_sq, is_radial, blend_mode, channel_key, is_live):
-        cache = self._get_valid_object_cache(context)
+    def _execute_object_gradient_fill(self, context, obj, dx, dy, length, length_sq, is_radial, blend_mode, channel_key, *, report=True, live=False):
+        cache = self._get_valid_object_cache(context, full_check=not live)
         if cache is None:
-            if not is_live:
-                self.report({"WARNING"}, tr("Gradient cache became invalid. Start the drag again."))
+            self.report({"WARNING"}, tr("Gradient cache became invalid. Start the drag again."))
             return False
 
         mesh, attribute = cache
-        np.subtract(self._cached_pts_2d[:, 0], self.start_pos[0], out=self._tmp_dx_vert)
-        np.subtract(self._cached_pts_2d[:, 1], self.start_pos[1], out=self._tmp_dy_vert)
-        self._fill_gradient_factors(dx, dy, length, length_sq, is_radial, self._tmp_dx_vert, self._tmp_dy_vert, self._tmp_t_vert)
-        self._tmp_t_vert[~self._valid_mask] = 0.0
+        count = getattr(self, "_data_mask_count", 0)
+        if count <= 0:
+            return True
 
-        if self._cached_domain == "POINT":
-            sample_lut_array_out(
-                self.lut,
-                self._tmp_t_vert,
-                self._target_rgba,
-                work_t=self._lut_work_t,
-                idx0_buf=self._lut_idx0,
-                idx1_buf=self._lut_idx1,
-                sample0_buf=self._lut_sample0,
-                sample1_buf=self._lut_sample1,
-                inv_weight_buf=self._lut_inv_weight,
+        np.subtract(self._active_pts_2d[:, 0], self.start_pos[0], out=self._tmp_dx_active)
+        np.subtract(self._active_pts_2d[:, 1], self.start_pos[1], out=self._tmp_dy_active)
+        self._fill_gradient_factors(dx, dy, length, length_sq, is_radial, self._tmp_dx_active, self._tmp_dy_active, self._tmp_t_active)
+
+        sample_lut_array_out(
+            self.lut,
+            self._tmp_t_active,
+            self._target_rgba_active,
+            work_t=self._lut_work_t,
+            idx0_buf=self._lut_idx0,
+            idx1_buf=self._lut_idx1,
+            sample0_buf=self._lut_sample0,
+            sample1_buf=self._lut_sample1,
+            inv_weight_buf=self._lut_inv_weight,
+        )
+        adapt_gradient_source_for_channel(self._target_rgba_active, channel_key)
+
+        if getattr(self, "_work_colors_initialized", False):
+            if self._data_mask_indices is None:
+                np.copyto(self._work_colors_np, self._cached_colors_np)
+            else:
+                self._work_colors_np[self._data_mask_indices] = self._cached_colors_np[self._data_mask_indices]
+        else:
+            np.copyto(self._work_colors_np, self._cached_colors_np)
+            self._work_colors_initialized = True
+        if self._data_mask_indices is None:
+            blend_colors_np(
+                self._work_colors_np,
+                self._target_rgba_active,
+                channel_key,
+                blend_mode,
             )
         else:
-            np.take(self._tmp_t_vert, self._loop_vert_indices, out=self._tmp_t_data)
-            sample_lut_array_out(
-                self.lut,
-                self._tmp_t_data,
-                self._target_rgba,
-                work_t=self._lut_work_t,
-                idx0_buf=self._lut_idx0,
-                idx1_buf=self._lut_idx1,
-                sample0_buf=self._lut_sample0,
-                sample1_buf=self._lut_sample1,
-                inv_weight_buf=self._lut_inv_weight,
+            blend_colors_np(
+                self._work_colors_np,
+                self._target_rgba_active,
+                channel_key,
+                blend_mode,
+                mask_indices=self._data_mask_indices,
+                current_buf=self._blend_current,
+                source_buf=self._blend_gradient,
+                low_mask_buf=self._blend_low_mask,
+                source_is_compact=True,
             )
-
-        np.copyto(self._work_colors_np, self._cached_colors_np)
-        blend_source_values_into_colors(
-            self._work_colors_np,
-            self._target_rgba,
-            channel_key,
-            blend_mode,
-            self._data_mask,
+        write_color_array_to_attribute(attribute, self._work_colors_np, mesh=mesh, update_mesh=False)
+        display.finish_color_write(
+            context,
+            mesh,
+            self._cached_layer_name,
+            obj=obj,
+            ensure_preview=False,
+            force_view_update=not live,
+            source_colors=self._work_colors_np,
+            defer_preview_sync=True,
         )
-        write_color_array_to_attribute(attribute, self._work_colors_np, mesh=mesh)
-        if not is_live:
-            display.refresh_after_color_write(context, mesh, self._cached_layer_name, obj=obj)
-            count = getattr(self, "_data_mask_count", 0)
-            target_label = tr("vertices") if self._cached_domain == "POINT" else tr("corners")
+        target_label = tr("vertices") if self._cached_domain == "POINT" else tr("corners")
+        if report:
             self.report(
                 {"INFO"},
                 tr_format(
@@ -295,78 +175,61 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
             )
         return True
 
-    def _cache_original_data(self, context):
+    def _cache_light_context(self, context):
         obj = context.active_object
+        if obj is None or obj.type != "MESH":
+            return False
+
         self._cached_mode = obj.mode
-
-        if obj.mode == "EDIT":
-            target, error = resolve_edit_color_layer(context)
-            if error:
-                return
-
-            self._cached_bm = target.bm
-            self._cached_layer = target.layer
-            self._cached_edit_layer_name = target.layer_name
-            bm = target.bm
-            layer = target.layer
-            use_selection = bm_use_vert_selection(bm)
-            self._edit_use_selection = use_selection
-            bm.verts.ensure_lookup_table()
-            bm.verts.index_update()
-
-            selected_verts = [vert for vert in bm.verts if vert.select] if use_selection else list(bm.verts)
-            selected_loops = [loop for face in bm.faces for loop in face.loops if (not use_selection or loop.vert.select)]
-            if not selected_verts or not selected_loops:
-                self._edit_selected_verts = []
-                self._edit_selected_loops = []
-                self._live_vertex_count = 0
-                return
-
-            vert_count = len(bm.verts)
-            self._edit_selected_verts = selected_verts
-            self._edit_selected_loops = selected_loops
-            self._edit_selected_vert_indices = np.array([vert.index for vert in selected_verts], dtype=np.int32)
-            self._edit_local_coords = np.array([vert.co[:] for vert in selected_verts], dtype=np.float32)
-            self._edit_original_loop_colors = _read_edit_loop_colors(selected_loops, layer)
-            self._edit_work_loop_colors = np.empty_like(self._edit_original_loop_colors)
-            self._edit_target_rgba = np.empty_like(self._edit_original_loop_colors)
-            self._edit_cached_pts_2d = np.zeros((len(selected_verts), 2), dtype=np.float32)
-            self._edit_valid_mask = np.zeros(len(selected_verts), dtype=bool)
-            self._edit_tmp_dx_vert = np.empty(len(selected_verts), dtype=np.float32)
-            self._edit_tmp_dy_vert = np.empty(len(selected_verts), dtype=np.float32)
-            self._edit_tmp_t_vert = np.empty(len(selected_verts), dtype=np.float32)
-            self._edit_tmp_t_loop = np.empty(len(selected_loops), dtype=np.float32)
-            self._edit_loop_mask = np.empty(len(selected_loops), dtype=bool)
-            self._edit_homo = np.empty((len(selected_verts), 4), dtype=np.float32)
-            self._edit_homo[:, :3] = self._edit_local_coords
-            self._edit_homo[:, 3] = 1.0
-            self._edit_lut_work_t = np.empty(len(selected_loops), dtype=np.float32)
-            self._edit_lut_idx0 = np.empty(len(selected_loops), dtype=np.int32)
-            self._edit_lut_idx1 = np.empty(len(selected_loops), dtype=np.int32)
-            self._edit_lut_sample0 = np.empty((len(selected_loops), 4), dtype=np.float32)
-            self._edit_lut_sample1 = np.empty((len(selected_loops), 4), dtype=np.float32)
-            self._edit_lut_inv_weight = np.empty(len(selected_loops), dtype=np.float32)
-            self._edit_blend_current = np.empty((len(selected_loops), 4), dtype=np.float32)
-            self._edit_blend_gradient = np.empty((len(selected_loops), 4), dtype=np.float32)
-            self._edit_blend_low_mask = np.empty((len(selected_loops), 4), dtype=bool)
-
-            vert_lookup = np.full(vert_count, -1, dtype=np.int32)
-            vert_lookup[self._edit_selected_vert_indices] = np.arange(len(selected_verts), dtype=np.int32)
-            self._edit_loop_vert_map = vert_lookup[np.array([loop.vert.index for loop in selected_loops], dtype=np.int32)]
-            self._live_vertex_count = len(selected_loops)
-            self._refresh_edit_projection_cache(context, force=True)
-            return
+        self._write_cache_ready = False
+        self._data_mask_count = 0
 
         if context.region is None or context.region_data is None:
-            return
+            return False
 
         obj_info, layer_info, error = _get_object_mode_layer_info(context)
         if error or obj_info != obj:
-            return
+            return False
 
-        mesh, attribute, domain, _, layer_name = layer_info
+        mesh, attribute, domain, data_type, layer_name = layer_info
         vert_count = len(mesh.vertices)
         data_count = len(attribute.data)
+        polygon_count = len(mesh.polygons)
+
+        self._cached_obj_name = obj.name
+        self._cached_layer_name = layer_name
+        self._cached_domain = domain
+        self._cached_data_type = data_type
+        self._cached_data_count = data_count
+        self._cached_polygon_count = polygon_count
+        self._cached_vert_count = vert_count
+        self._cached_region_size = (context.region.width, context.region.height)
+        self._cached_world_matrix_np = np.array(obj.matrix_world, dtype=np.float32)
+        self._cached_perspective_matrix_np = np.array(context.region_data.perspective_matrix, dtype=np.float32)
+        self._cached_world_matrix_bytes = self._cached_world_matrix_np.tobytes()
+        self._cached_perspective_matrix_bytes = self._cached_perspective_matrix_np.tobytes()
+        self._cached_mesh = mesh
+        self._cached_attribute = attribute
+        self._live_vertex_count = data_count
+        self._live_write_enabled = (
+            data_count <= LIVE_WRITE_MAX_COLOR_ENTRIES
+            and polygon_count <= LIVE_WRITE_MAX_POLYGONS
+        )
+        return True
+
+    def _cache_original_data(self, context):
+        if not getattr(self, "_cached_mesh", None) and not self._cache_light_context(context):
+            return False
+
+        cache = self._get_valid_object_cache(context)
+        if cache is None:
+            return False
+
+        obj = context.active_object
+        mesh, attribute = cache
+        domain = self._cached_domain
+        vert_count = self._cached_vert_count
+        data_count = self._cached_data_count
         selection_scope = resolve_selection_scope(context, attribute)
 
         local_co = np.empty(vert_count * 3, dtype=np.float32)
@@ -395,50 +258,55 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
             data_mask = valid_mask.copy()
             data_mask &= selection_scope.data_mask
         else:
-            loop_vert_indices = np.empty(data_count, dtype=np.int32)
-            mesh.loops.foreach_get("vertex_index", loop_vert_indices)
+            loop_vert_indices = selection_scope.loop_vertex_indices
+            if loop_vert_indices is None or len(loop_vert_indices) != data_count:
+                loop_vert_indices = cached_loop_vertex_indices(mesh)
             data_mask = valid_mask[loop_vert_indices]
             data_mask &= selection_scope.data_mask
 
         self._cached_colors_np = read_color_attribute_colors(mesh, attribute)
         self._work_colors_np = np.empty_like(self._cached_colors_np)
-        self._target_rgba = np.empty((data_count, 4), dtype=np.float32)
-        self._tmp_dx_vert = np.empty(vert_count, dtype=np.float32)
-        self._tmp_dy_vert = np.empty(vert_count, dtype=np.float32)
-        self._tmp_t_vert = np.empty(vert_count, dtype=np.float32)
-        self._tmp_t_data = np.empty(data_count, dtype=np.float32) if domain == "CORNER" else None
+        data_mask_count = int(np.sum(data_mask)) if data_mask.size > 0 else 0
+        data_mask_indices = None if data_mask_count == data_count else np.flatnonzero(data_mask).astype(np.int32, copy=False)
+        if domain == "POINT":
+            active_pts_2d = pts_2d if data_mask_indices is None else pts_2d[data_mask_indices].copy()
+        else:
+            active_pts_2d = pts_2d[loop_vert_indices].copy() if data_mask_indices is None else pts_2d[loop_vert_indices[data_mask_indices]].copy()
 
-        self._cached_obj_name = obj.name
-        self._cached_layer_name = layer_name
-        self._cached_domain = domain
-        self._cached_data_type = attribute.data_type
-        self._cached_data_count = data_count
-        self._cached_vert_count = vert_count
-        self._cached_region_size = (context.region.width, context.region.height)
-        self._cached_world_matrix_np = np.array(obj.matrix_world, dtype=np.float32)
-        self._cached_perspective_matrix_np = np.array(context.region_data.perspective_matrix, dtype=np.float32)
+        self._target_rgba_active = np.empty((data_mask_count, 4), dtype=np.float32)
+        self._tmp_dx_active = np.empty(data_mask_count, dtype=np.float32)
+        self._tmp_dy_active = np.empty(data_mask_count, dtype=np.float32)
+        self._tmp_t_active = np.empty(data_mask_count, dtype=np.float32)
+
         self._cached_pts_2d = pts_2d
         self._valid_mask = valid_mask
         self._loop_vert_indices = loop_vert_indices
-        self._data_mask = data_mask
-        self._data_mask_indices = np.flatnonzero(data_mask).astype(np.int32, copy=False)
-        self._data_mask_count = int(np.count_nonzero(data_mask))
+        self._data_mask_indices = data_mask_indices
+        self._data_mask_count = data_mask_count
+        self._active_pts_2d = active_pts_2d
         self._cached_mesh = mesh
         self._cached_attribute = attribute
+        self._work_colors_initialized = False
         self._live_vertex_count = self._data_mask_count
-        self._cached_world_matrix_bytes = self._cached_world_matrix_np.tobytes()
-        self._cached_perspective_matrix_bytes = self._cached_perspective_matrix_np.tobytes()
-        self._lut_work_t = np.empty(data_count, dtype=np.float32)
-        self._lut_idx0 = np.empty(data_count, dtype=np.int32)
-        self._lut_idx1 = np.empty(data_count, dtype=np.int32)
-        self._lut_sample0 = np.empty((data_count, 4), dtype=np.float32)
-        self._lut_sample1 = np.empty((data_count, 4), dtype=np.float32)
-        self._lut_inv_weight = np.empty(data_count, dtype=np.float32)
-        self._blend_current = np.empty((max(data_count, 1), 4), dtype=np.float32)
-        self._blend_gradient = np.empty((max(data_count, 1), 4), dtype=np.float32)
-        self._blend_low_mask = np.empty((max(data_count, 1), 4), dtype=bool)
+        buffer_count = max(data_mask_count, 1)
+        self._lut_work_t = np.empty(buffer_count, dtype=np.float32)
+        self._lut_idx0 = np.empty(buffer_count, dtype=np.int32)
+        self._lut_idx1 = np.empty(buffer_count, dtype=np.int32)
+        self._lut_sample0 = np.empty((buffer_count, 4), dtype=np.float32)
+        self._lut_sample1 = np.empty((buffer_count, 4), dtype=np.float32)
+        self._lut_inv_weight = np.empty(buffer_count, dtype=np.float32)
+        self._blend_current = np.empty((buffer_count, 4), dtype=np.float32)
+        self._blend_gradient = np.empty((buffer_count, 4), dtype=np.float32)
+        self._blend_low_mask = np.empty((buffer_count, 4), dtype=bool)
+        self._write_cache_ready = True
+        return True
 
-    def _get_valid_object_cache(self, context):
+    def _ensure_write_cache(self, context):
+        if getattr(self, "_write_cache_ready", False):
+            return self._get_valid_object_cache(context) is not None
+        return self._cache_original_data(context)
+
+    def _get_valid_object_cache(self, context, *, full_check=True):
         if getattr(self, "_cached_mode", None) != "OBJECT":
             return None
         if context.region is None or context.region_data is None:
@@ -449,6 +317,13 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
             return None
         if obj.name != getattr(self, "_cached_obj_name", ""):
             return None
+
+        if not full_check:
+            mesh = getattr(self, "_cached_mesh", None)
+            attribute = getattr(self, "_cached_attribute", None)
+            if mesh is None or attribute is None:
+                return None
+            return mesh, attribute
 
         obj_info, layer_info, error = _get_object_mode_layer_info(context)
         if error or obj_info != obj:
@@ -490,6 +365,34 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
                 return None
 
         return now
+
+    def _should_update_overlay(self, mouse_pos):
+        if getattr(self, "_live_write_enabled", True):
+            return True
+
+        now = time.perf_counter()
+        last_time = getattr(self, "_last_overlay_time", 0.0)
+        if now - last_time < LARGE_MESH_OVERLAY_INTERVAL:
+            return False
+
+        last_pos = getattr(self, "_last_overlay_mouse_pos", None)
+        if last_pos is not None and mouse_pos is not None:
+            dx = mouse_pos[0] - last_pos[0]
+            dy = mouse_pos[1] - last_pos[1]
+            if LARGE_MESH_OVERLAY_MOUSE_THRESHOLD_SQ > 0.0 and (dx * dx + dy * dy) < LARGE_MESH_OVERLAY_MOUSE_THRESHOLD_SQ:
+                return False
+
+        self._last_overlay_time = now
+        self._last_overlay_mouse_pos = mouse_pos
+        return True
+
+    def _update_overlay_mouse(self, context, mouse_pos, *, force=False):
+        if force or self._should_update_overlay(mouse_pos):
+            self._draw_state["mouse_pos"] = mouse_pos
+            if context.area:
+                context.area.tag_redraw()
+            return True
+        return False
 
     @staticmethod
     def _get_view3d_shading(context):
@@ -537,18 +440,16 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
             return {"CANCELLED"}
 
         obj = context.active_object
-        if obj is not None and obj.mode == "EDIT":
-            target, error = resolve_edit_color_layer(context)
-            if error:
-                self.report({"WARNING"}, error)
-                return {"CANCELLED"}
-            if target.domain == "POINT":
-                self.report({"WARNING"}, tr("Viewport Gradient needs a Face Corner color attribute in Edit Mode."))
-                return {"CANCELLED"}
+        if obj is not None and getattr(obj, "mode", "OBJECT") != "OBJECT":
+            try:
+                context.view_layer.objects.active = obj
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except Exception:
+                pass
 
-        ramp_node = ensure_ramp_node()
+        ramp_node = find_ramp_node()
         if ramp_node is None or not ramp_node.color_ramp:
-            self.report({"ERROR"}, tr("Could not create the gradient ramp."))
+            self.report({"WARNING"}, tr("Create the gradient ramp first."))
             return {"CANCELLED"}
 
         self.lut = build_ramp_lut(ramp_node.color_ramp, 512)
@@ -561,11 +462,14 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
         self.mouse_pos = None
         self._handle = None
         self._live_vertex_count = 0
-        self._edit_use_selection = False
         self._last_live_time = 0.0
         self._live_interval = 1.0 / 30.0
         self._last_live_mouse_pos = None
         self._live_mouse_threshold_sq = 4.0
+        self._last_overlay_time = 0.0
+        self._last_overlay_mouse_pos = None
+        self._live_write_enabled = False
+        self._write_cache_ready = False
         self._capture_viewport_state(context)
 
         self._draw_state = {
@@ -577,8 +481,6 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
             "region_ptr": context.region.as_pointer() if context.region is not None else None,
         }
 
-        display.ensure_preview_visible(context)
-
         self._handle = bpy.types.SpaceView3D.draw_handler_add(
             draw_gradient_overlay_callback,
             (self._draw_state,),
@@ -586,14 +488,37 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
             "POST_PIXEL",
         )
 
-        context.window_manager.modal_handler_add(self)
-        context.workspace.status_text_set(tr("Drag with LMB to draw. Hold Ctrl to snap. RMB or Esc cancels."))
+        try:
+            context.window_manager.modal_handler_add(self)
+            context.workspace.status_text_set(tr("Drag with LMB to draw. Hold Ctrl to snap. RMB or Esc cancels."))
+        except Exception as exc:
+            self._finish(context)
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         return {"RUNNING_MODAL"}
 
     def modal(self, context, event):
-        if context.area:
-            context.area.tag_redraw()
+        try:
+            return self._modal_impl(context, event)
+        except Exception as exc:
+            self._handle_modal_exception(context, exc)
+            return {"CANCELLED"}
 
+    def cancel(self, context):
+        self._finish(context)
+
+    def _handle_modal_exception(self, context, exc):
+        try:
+            self.report({"ERROR"}, str(exc))
+        except Exception:
+            pass
+        try:
+            self._restore_cached_preview(context)
+        except Exception:
+            pass
+        self._finish(context)
+
+    def _modal_impl(self, context, event):
         if event.type in {"RIGHTMOUSE", "ESC"}:
             self._restore_cached_preview(context)
             self._finish(context)
@@ -604,11 +529,14 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
                 self.start_pos = (event.mouse_region_x, event.mouse_region_y)
                 self.mouse_pos = self.start_pos
                 self._draw_state["start_pos"] = self.start_pos
-                self._draw_state["mouse_pos"] = self.mouse_pos
+                self._update_overlay_mouse(context, self.mouse_pos, force=True)
                 self._last_live_mouse_pos = self.start_pos
                 self._last_live_time = 0.0
+                self._last_overlay_time = 0.0
+                self._last_overlay_mouse_pos = self.start_pos
                 self.state = "DRAWING"
-                self._cache_original_data(context)
+                if self._cache_light_context(context) and self._live_write_enabled:
+                    self._cache_original_data(context)
             return {"RUNNING_MODAL"}
 
         if self.state == "DRAWING":
@@ -632,16 +560,18 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
                 else:
                     self.mouse_pos = (mx, my)
 
-                self._draw_state["mouse_pos"] = self.mouse_pos
-
-                if getattr(context.scene, "ylvc_use_live_gradient", False):
-                    live_time = self._should_run_live_preview()
-                    if live_time is not None and self.execute_gradient_fill(context, is_live=True):
-                        self._last_live_time = live_time
-                        self._last_live_mouse_pos = self.mouse_pos
+                self._update_overlay_mouse(context, self.mouse_pos)
+                if getattr(self, "_live_write_enabled", True):
+                    live_now = self._should_run_live_preview()
+                    if live_now is not None:
+                        success = self.execute_gradient_fill(context, report=False, live=True)
+                        if success:
+                            self._last_live_time = live_now
+                            self._last_live_mouse_pos = self.mouse_pos
 
             elif event.type == "LEFTMOUSE" and event.value == "RELEASE":
-                success = self.execute_gradient_fill(context, is_live=False)
+                self.mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+                success = self.execute_gradient_fill(context, report=True)
                 self._finish(context)
                 return {"FINISHED"} if success else {"CANCELLED"}
 
@@ -649,35 +579,32 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
 
     def _finish(self, context):
         if getattr(self, "_handle", None) is not None:
-            bpy.types.SpaceView3D.draw_handler_remove(self._handle, "WINDOW")
-            self._handle = None
-        context.workspace.status_text_set(None)
+            try:
+                bpy.types.SpaceView3D.draw_handler_remove(self._handle, "WINDOW")
+            except Exception:
+                pass
+            finally:
+                self._handle = None
+        try:
+            context.workspace.status_text_set(None)
+        except Exception:
+            pass
         self._restore_viewport_state(context)
-        context.scene.ylvc_is_tracing = False
-        if hasattr(context.scene, "ylvc_tracing_type"):
-            context.scene.ylvc_tracing_type = ""
-        if context.area:
-            context.area.tag_redraw()
+        scene = getattr(context, "scene", None)
+        if scene is not None:
+            try:
+                scene.ylvc_is_tracing = False
+            except Exception:
+                pass
+            if hasattr(scene, "ylvc_tracing_type"):
+                scene.ylvc_tracing_type = ""
+        area = getattr(context, "area", None)
+        if area:
+            area.tag_redraw()
 
     def _restore_cached_preview(self, context):
         obj = context.active_object
         if obj is None or obj.type != "MESH":
-            return
-
-        if getattr(self, "_cached_mode", None) == "EDIT":
-            bm = getattr(self, "_cached_bm", None)
-            layer = getattr(self, "_cached_layer", None)
-            cached_colors = getattr(self, "_edit_original_loop_colors", None)
-            cached_loops = getattr(self, "_edit_selected_loops", None)
-            if bm is None or layer is None or cached_colors is None or not cached_loops:
-                return
-
-            for loop, color in zip(cached_loops, cached_colors):
-                try:
-                    loop[layer] = color.tolist()
-                except Exception:
-                    pass
-            bmesh.update_edit_mesh(obj.data)
             return
 
         mesh = getattr(self, "_cached_mesh", None)
@@ -687,12 +614,12 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
             return
 
         try:
-            restore_color_array_to_attribute(attribute, cached_colors, mesh=mesh)
-            display.refresh_after_color_write(context, mesh, getattr(self, "_cached_layer_name", ""), obj=obj)
+            restore_color_array_to_attribute(attribute, cached_colors, mesh=mesh, update_mesh=False)
+            display.finish_color_write(context, mesh, getattr(self, "_cached_layer_name", ""), obj=obj)
         except Exception:
             pass
 
-    def execute_gradient_fill(self, context, is_live=False):
+    def execute_gradient_fill(self, context, report=True, live=False):
         obj = context.active_object
         if context.region is None or context.region_data is None or self.lut is None:
             return False
@@ -705,19 +632,19 @@ class MESH_OT_YLVCTraceRamp(bpy.types.Operator):
         if length_sq <= 1e-6:
             return False
 
+        if not self._ensure_write_cache(context):
+            self.report({"WARNING"}, tr("Gradient cache became invalid. Start the drag again."))
+            return False
+
         length = math.sqrt(length_sq)
         is_radial = self.grad_type == "RADIAL"
         blend_mode = context.scene.ylvc_blend_mode
         channel_key = context.scene.ylvc_channel
 
-        if obj.mode == "EDIT":
-            return self._execute_edit_gradient_fill(context, obj, dx, dy, length, length_sq, is_radial, blend_mode, channel_key, is_live)
-
-        return self._execute_object_gradient_fill(context, obj, dx, dy, length, length_sq, is_radial, blend_mode, channel_key, is_live)
+        return self._execute_object_gradient_fill(context, obj, dx, dy, length, length_sq, is_radial, blend_mode, channel_key, report=report, live=live)
 
 
 CLASSES = (
     MESH_OT_YLVCInitRampData,
-    MESH_OT_YLVCInitLightRampData,
     MESH_OT_YLVCTraceRamp,
 )

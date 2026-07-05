@@ -16,3 +16,17 @@ CLASSES = (
     *OPERATOR_CLASSES,
     *UI_CLASSES,
 )
+
+
+def register():
+    import bpy
+
+    for cls in CLASSES:
+        bpy.utils.register_class(cls)
+
+
+def unregister():
+    import bpy
+
+    for cls in reversed(CLASSES):
+        bpy.utils.unregister_class(cls)

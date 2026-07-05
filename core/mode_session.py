@@ -67,8 +67,12 @@ def restore_object_context(context, state):
     except Exception:
         pass
 
-    if state.mode != "OBJECT":
-        set_object_mode(context, state.mode)
+    try:
+        active = context.view_layer.objects.active
+        if active is not None and active.mode != state.mode:
+            set_object_mode(context, state.mode)
+    except Exception:
+        pass
 
 
 def make_single_active_object(context, obj):

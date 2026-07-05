@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Texture, weight, and mesh transfer UI."""
+"""Texture and weight transfer UI."""
 
-from ... import utils
 from ...i18n import tr, tr_format
 from ..common import draw_hint, draw_missing, draw_requires, get_mesh_context, section_body
 
@@ -17,10 +16,8 @@ def draw_texture_transfer_content(layout, context):
     transfer_mode = getattr(scene, "ylvc_transfer_mode", "TEXTURE")
     if transfer_mode == "TEXTURE":
         draw_transfer_texture_mode(content, context, obj)
-    elif transfer_mode == "WEIGHT":
-        draw_transfer_weight_mode(content, context, obj)
     else:
-        draw_transfer_mesh_mode(content, context, obj)
+        draw_transfer_weight_mode(content, context, obj)
 
 
 def draw_transfer_texture_mode(content, context, obj):
@@ -52,7 +49,7 @@ def draw_transfer_texture_mode(content, context, obj):
     )
     if scene.ylvc_show_texture_advanced:
         col_advanced = content.column(align=True)
-        col_advanced.prop(scene, "ylvc_bake_margin", text=tr("Bake Margin"))
+        col_advanced.prop(scene, "ylvc_image_padding", text=tr("Image Padding"))
         content.separator(factor=0.4)
 
     if not has_image:
@@ -67,7 +64,7 @@ def draw_transfer_texture_mode(content, context, obj):
     )
     row_actions.operator(
         "mesh.ylvc_color_to_texture",
-        text=tr_format("Bake {channel_key} to Texture", channel_key=scene.ylvc_channel),
+        text=tr_format("Write {channel_key} to Image", channel_key=scene.ylvc_channel),
     )
 
 
@@ -90,64 +87,3 @@ def draw_transfer_weight_mode(content, context, obj):
         "mesh.ylvc_weights_to_color",
         text=tr_format("Weights -> {channel_key}", channel_key=scene.ylvc_channel),
     )
-
-
-def draw_transfer_mesh_mode(content, context, obj):
-    scene = context.scene
-    col_mesh = content.column(align=True)
-
-    source_obj = getattr(obj, "ylvc_transfer_source_object", None) if obj and obj.type == "MESH" else None
-    if obj and obj.type == "MESH":
-        col_mesh.prop(obj, "ylvc_transfer_source_object", text=tr("Transfer Object"))
-    else:
-        draw_requires(col_mesh, "mesh object")
-        return
-
-    source_attr = utils.get_active_color_attribute_safe(source_obj.data) if source_obj and source_obj.type == "MESH" else None
-
-    if source_obj and not source_attr:
-        draw_missing(col_mesh, "active color attribute on chosen object")
-
-    settings = getattr(scene, "ylvc_transfer_settings", None)
-    if settings is not None:
-        col_mesh.prop(settings, "source_channel", text=tr("Source"))
-        col_mesh.prop(settings, "mapping_mode", text=tr("Match"))
-
-        active_attr = utils.get_active_color_attribute_safe(obj.data) if obj and obj.type == "MESH" else None
-        row_advanced = col_mesh.row(align=True)
-        row_advanced.alignment = "LEFT"
-        row_advanced.prop(
-            scene,
-            "ylvc_show_mesh_advanced",
-            text=tr("Advanced"),
-            icon="TRIA_DOWN" if scene.ylvc_show_mesh_advanced else "TRIA_RIGHT",
-            emboss=False,
-        )
-        if scene.ylvc_show_mesh_advanced:
-            col_advanced = col_mesh.column(align=True)
-            col_advanced.prop(settings, "use_max_distance", text=tr("Use Max Distance"))
-            sub_distance = col_advanced.column(align=True)
-            sub_distance.enabled = settings.use_max_distance
-            sub_distance.prop(settings, "max_distance", text=tr("Max Distance"))
-            if settings.mapping_mode == "PROJECTED":
-                col_advanced.prop(settings, "ray_radius", text=tr("Ray Radius"))
-
-            if source_attr and active_attr and source_attr.domain == "CORNER" and active_attr.domain == "POINT":
-                col_advanced.prop(settings, "hard_edge_threshold", text=tr("Hard Edge Threshold"))
-            col_mesh.separator(factor=0.4)
-
-    if source_obj is None:
-        draw_requires(col_mesh, "transfer object")
-    row_transfer = col_mesh.row(align=True)
-    row_transfer.scale_y = 1.5
-    row_transfer.enabled = source_obj is not None and source_attr is not None
-    op_forward = row_transfer.operator(
-        "mesh.ylvc_transfer_mesh_colors",
-        text=tr("Other -> Active"),
-    )
-    op_forward.reverse = False
-    op_reverse = row_transfer.operator(
-        "mesh.ylvc_transfer_mesh_colors",
-        text=tr("Active -> Other"),
-    )
-    op_reverse.reverse = True

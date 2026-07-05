@@ -1,15 +1,13 @@
 __pycache__/
 *.py[cod]
-*.pyo
-*.tmp
-*.bak
-*.log
-*.blend[0-9]
 
-.DS_Store
-Thumbs.db
+__ylvc_tests/
 
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+*.zip
 dist/
+build/
+
+*.log
+*.tmp
+
+*.blend1

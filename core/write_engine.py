@@ -3,13 +3,10 @@
 
 from dataclasses import dataclass
 
-import bmesh
 import numpy as np
 
 from .blend import blend_colors_np, normalize_blend_mode
 from .color_attribute import (
-    read_color_attribute_colors,
-    resolve_edit_color_layer,
     resolve_target_color_attribute,
     write_color_attribute_colors,
 )
@@ -27,6 +24,7 @@ class WriteResult:
     layer_name: str = ""
     domain: str = ""
     affected_count: int = 0
+    mesh_updated: bool = False
 
     def as_tuple(self):
         return self.success, self.message
@@ -34,17 +32,6 @@ class WriteResult:
 
 def _target_label(domain):
     return tr("vertices") if domain == "POINT" else tr("corners")
-
-
-def read_edit_element_colors(elements, layer):
-    if not elements:
-        return np.empty((0, 4), dtype=np.float32)
-    return np.array([tuple(float(component) for component in elem[layer][:4]) for elem in elements], dtype=np.float32)
-
-
-def write_edit_element_colors(elements, layer, colors):
-    for elem, color in zip(elements, colors):
-        elem[layer] = tuple(float(component) for component in color)
 
 
 def build_source_color_array(count, value, channel_key, base_colors=None):
@@ -116,21 +103,122 @@ def _blend_with_strength(colors, source, channel_key, blend_mode, strength, mask
     return colors
 
 
+def _mask_to_indices(mask, count):
+    if mask is None:
+        return None
+    if isinstance(mask, slice):
+        start, stop, step = mask.indices(count)
+        if start == 0 and stop == count and step == 1:
+            return None
+        return np.arange(start, stop, step, dtype=np.int32)
+
+    mask_array = np.asarray(mask)
+    if mask_array.dtype == bool:
+        return np.flatnonzero(mask_array).astype(np.int32, copy=False)
+    return mask_array.astype(np.int32, copy=False).reshape(-1)
+
+
+def _values_for_targets(values, target_indices, full_count):
+    values = np.asarray(values, dtype=np.float32)
+    if values.ndim == 0 or target_indices is None:
+        return values
+    if values.shape[0] == len(target_indices):
+        return values
+    if values.shape[0] == full_count:
+        return values[target_indices]
+    return values
+
+
+def _assign_values_to_channels(colors, values, channel_key, target_indices=None):
+    channels = channel_indices(channel_key)
+    values = np.asarray(values, dtype=np.float32)
+
+    def assign_channel(channel, channel_values):
+        clipped = np.clip(channel_values, 0.0, 1.0)
+        if target_indices is None:
+            colors[:, channel] = clipped
+        else:
+            colors[:, channel][target_indices] = clipped
+
+    if values.ndim == 0:
+        for channel in channels:
+            assign_channel(channel, float(values))
+        return colors
+
+    if values.ndim == 1:
+        for channel in channels:
+            assign_channel(channel, values)
+        return colors
+
+    value_width = values.shape[1]
+    if channel_key == "RGB":
+        if value_width >= 3:
+            if target_indices is None:
+                colors[:, 0:3] = np.clip(values[:, 0:3], 0.0, 1.0)
+            else:
+                colors[target_indices, 0:3] = np.clip(values[:, 0:3], 0.0, 1.0)
+        else:
+            gray = values[:, 0]
+            for channel in channels:
+                assign_channel(channel, gray)
+    elif value_width >= 4:
+        for channel in channels:
+            assign_channel(channel, values[:, channel])
+    elif value_width >= len(channels):
+        for offset, channel in enumerate(channels):
+            assign_channel(channel, values[:, offset])
+    else:
+        for channel in channels:
+            assign_channel(channel, values[:, 0])
+    return colors
+
+
 def blend_source_values_into_colors(colors, source_values, channel_key, blend_mode="REPLACE", mask=None, strength=1.0):
     """Blend source values into an existing RGBA array in place."""
     colors = np.asarray(colors, dtype=np.float32).reshape(-1, 4)
     values = np.asarray(source_values, dtype=np.float32)
-    if mask is not None and not isinstance(mask, slice) and values.ndim > 0 and values.shape[0] != len(colors):
-        mask_array = np.asarray(mask)
-        mask_count = int(np.count_nonzero(mask_array)) if mask_array.dtype == bool else int(mask_array.size)
-        if values.shape[0] != mask_count:
-            raise ValueError("Source value count does not match target color count or mask count.")
-        if values.ndim == 1:
-            full_values = np.zeros(len(colors), dtype=np.float32)
+    count = len(colors)
+    target_indices = _mask_to_indices(mask, count)
+    target_count = count if target_indices is None else len(target_indices)
+
+    if values.ndim > 0 and values.shape[0] not in {count, target_count}:
+        raise ValueError("Source value count does not match target color count or mask count.")
+
+    strength = max(0.0, min(1.0, float(strength)))
+    blend_mode = normalize_blend_mode(blend_mode)
+    if strength <= 0.0:
+        return colors
+
+    if blend_mode == "REPLACE":
+        target_values = _values_for_targets(values, target_indices, count)
+        if strength >= 1.0:
+            _assign_values_to_channels(colors, target_values, channel_key, target_indices)
+            return colors
+
+        original = colors.copy() if target_indices is None else colors[target_indices].copy()
+        _assign_values_to_channels(colors, target_values, channel_key, target_indices)
+        if target_indices is None:
+            colors[:] = original + (colors - original) * strength
         else:
-            full_values = np.zeros((len(colors), values.shape[1]), dtype=np.float32)
-        full_values[mask_array] = values
-        values = full_values
+            colors[target_indices] = original + (colors[target_indices] - original) * strength
+        np.clip(colors, 0.0, 1.0, out=colors)
+        return colors
+
+    if target_indices is not None and values.ndim > 0 and values.shape[0] == target_count:
+        base_colors = colors[target_indices]
+        source = build_source_color_array_from_values(base_colors, values, channel_key)
+        original = None
+        if strength < 1.0:
+            original = base_colors[:, channel_indices(channel_key)].copy()
+        blend_colors_np(colors, source, channel_key, blend_mode, mask_indices=target_indices, source_is_compact=True)
+        if strength < 1.0:
+            for offset, channel in enumerate(channel_indices(channel_key)):
+                channel_view = colors[:, channel]
+                blended = channel_view[target_indices]
+                channel_view[target_indices] = original[:, offset] + (blended - original[:, offset]) * strength
+        np.clip(colors, 0.0, 1.0, out=colors)
+        return colors
+
     source = build_source_color_array_from_values(colors, values, channel_key)
     _blend_with_strength(colors, source, channel_key, blend_mode, strength, mask)
     np.clip(colors, 0.0, 1.0, out=colors)
@@ -166,50 +254,12 @@ def restore_color_array_to_attribute(color_attr, colors, *, mesh=None, update_me
     write_color_array_to_attribute(color_attr, colors, mesh=mesh, update_mesh=update_mesh)
 
 
-def write_source_values_to_color_attribute_result(
-    context,
-    source_values,
-    *,
-    channel_key="RGB",
-    blend_mode="REPLACE",
-    strength=1.0,
-    target=None,
-    mask=None,
-):
-    target = target or resolve_target_color_attribute(context)[0]
-    if target is None:
-        return WriteResult(False, tr("No active color attribute found."))
+def write_value_result(context, value, *, channel_key="RGB", blend_mode="REPLACE", strength=1.0):
+    obj = context.active_object
+    if obj is None or obj.type != "MESH":
+        return WriteResult(False, tr("Select a mesh object first."))
 
-    attribute = target.color_attr
-    if mask is None:
-        mask = resolve_selection_scope(context, attribute).data_mask
-    if not np.any(mask):
-        return WriteResult(
-            True,
-            tr_format("Wrote {count} {target_label} on channel {channel_key}.", count=0, target_label=_target_label(target.domain), channel_key=channel_key),
-            obj=target.obj,
-            mesh=target.mesh,
-            layer_name=target.layer_name,
-            domain=target.domain,
-        )
-
-    colors = read_color_attribute_colors(target.mesh, attribute)
-    blend_source_values_into_colors(colors, source_values, channel_key, blend_mode, mask, strength)
-    write_color_array_to_attribute(attribute, colors, mesh=target.mesh)
-    affected = int(np.sum(mask))
-    return WriteResult(
-        True,
-        tr_format("Wrote {count} {target_label} on channel {channel_key}.", count=affected, target_label=_target_label(target.domain), channel_key=channel_key),
-        obj=target.obj,
-        mesh=target.mesh,
-        layer_name=target.layer_name,
-        domain=target.domain,
-        affected_count=affected,
-    )
-
-
-def write_value_to_color_attribute_result(context, value, *, channel_key="RGB", blend_mode="REPLACE", strength=1.0, target=None):
-    target = target or resolve_target_color_attribute(context)[0]
+    target = resolve_target_color_attribute(context)[0]
     if target is None:
         return WriteResult(False, tr("No active color attribute found."))
 
@@ -243,94 +293,6 @@ def write_value_to_color_attribute_result(context, value, *, channel_key="RGB", 
         mesh=target.mesh,
         layer_name=target.layer_name,
         domain=target.domain,
+        mesh_updated=True,
         affected_count=affected,
     )
-
-
-def write_value_to_color_attribute(context, value, *, channel_key="RGB", blend_mode="REPLACE", strength=1.0, target=None):
-    return write_value_to_color_attribute_result(
-        context,
-        value,
-        channel_key=channel_key,
-        blend_mode=blend_mode,
-        strength=strength,
-        target=target,
-    ).as_tuple()
-
-
-def write_value_to_edit_color_layer_result(context, value, *, channel_key="RGB", blend_mode="REPLACE", strength=1.0, target=None):
-    target = target or resolve_edit_color_layer(context)[0]
-    if target is None:
-        return WriteResult(False, tr("No active edit color layer found."))
-
-    scope = resolve_selection_scope(context, target.color_attr)
-    mask = scope.data_mask
-    if not np.any(mask):
-        return WriteResult(
-            True,
-            tr_format("Wrote {count} {target_label} on channel {channel_key}.", count=0, target_label=_target_label(target.domain), channel_key=channel_key),
-            obj=target.obj,
-            mesh=target.mesh,
-            layer_name=target.layer_name,
-            domain=target.domain,
-        )
-
-    if target.domain == "POINT":
-        target.bm.verts.ensure_lookup_table()
-        indices = np.flatnonzero(mask)
-        elements = [target.bm.verts[index] for index in indices.tolist()]
-    else:
-        elements = []
-        for face in target.bm.faces:
-            for loop in face.loops:
-                if loop.index < mask.size and mask[loop.index]:
-                    elements.append(loop)
-
-    colors = read_edit_element_colors(elements, target.layer)
-    if colors.size == 0:
-        return WriteResult(
-            True,
-            tr_format("Wrote {count} {target_label} on channel {channel_key}.", count=0, target_label=_target_label(target.domain), channel_key=channel_key),
-            obj=target.obj,
-            mesh=target.mesh,
-            layer_name=target.layer_name,
-            domain=target.domain,
-        )
-
-    source = build_source_color_array(len(colors), value, channel_key, base_colors=colors)
-    _blend_with_strength(colors, source, channel_key, blend_mode, strength, None)
-    write_edit_element_colors(elements, target.layer, colors)
-    bmesh.update_edit_mesh(target.mesh)
-    return WriteResult(
-        True,
-        tr_format("Wrote {count} {target_label} on channel {channel_key}.", count=len(elements), target_label=_target_label(target.domain), channel_key=channel_key),
-        obj=target.obj,
-        mesh=target.mesh,
-        layer_name=target.layer_name,
-        domain=target.domain,
-        affected_count=len(elements),
-    )
-
-
-def write_value_to_edit_color_layer(context, value, *, channel_key="RGB", blend_mode="REPLACE", strength=1.0, target=None):
-    return write_value_to_edit_color_layer_result(
-        context,
-        value,
-        channel_key=channel_key,
-        blend_mode=blend_mode,
-        strength=strength,
-        target=target,
-    ).as_tuple()
-
-
-def write_value_result(context, value, *, channel_key="RGB", blend_mode="REPLACE", strength=1.0):
-    obj = context.active_object
-    if obj is None or obj.type != "MESH":
-        return WriteResult(False, tr("Select a mesh object first."))
-    if obj.mode == "EDIT":
-        return write_value_to_edit_color_layer_result(context, value, channel_key=channel_key, blend_mode=blend_mode, strength=strength)
-    return write_value_to_color_attribute_result(context, value, channel_key=channel_key, blend_mode=blend_mode, strength=strength)
-
-
-def write_value(context, value, *, channel_key="RGB", blend_mode="REPLACE", strength=1.0):
-    return write_value_result(context, value, channel_key=channel_key, blend_mode=blend_mode, strength=strength).as_tuple()
