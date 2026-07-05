@@ -1,8 +1,6 @@
 __pycache__/
 *.py[cod]
 
-__ylvc_tests/
-
 *.zip
 dist/
 build/
