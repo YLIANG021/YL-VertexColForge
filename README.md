@@ -1,10 +1,19 @@
 # YL VertexColForge
 
-- **YL VertexColForge** is a channel editing tool for Blender Vertex Color / Color Attribute data. It provides a more direct workflow for previewing, painting, selecting, gradient generation, randomization, conversion, and packing of RGB / R / G / B / A channels, and also makes A-channel editing easier in workflows where it is usually more cumbersome.
+YL VertexColForge makes Color Attribute channel editing simple: preview, paint, fill, select, adjust, pack, and transfer RGB / R / G / B / A channels directly inside Blender.
 
-- The plugin supports both Face Corner and Vertex / Point color attribute domains. Whether the current target channel is RGB, R, G, B, or A, fill, brush, gradient, random, and conversion operations always write accurately to the target channel without affecting the others.
+### ✨ With YL VertexColForge you can:
 
-- It is suitable for game assets, material masks, vertex color weights, channel packing data, and Alpha channel preview. You can complete the full workflow from channel generation, editing, and organization to pre-export checking entirely inside Blender.
+- 👁️ Preview RGB, R, G, B, or A channels directly in the viewport
+- ✍️ Paint and fill a single channel, including Alpha, without affecting the others
+- 🎯 Pick a channel value on the mesh, drag to adjust tolerance, and select matching areas
+- 🌈 Draw Color Ramp gradients, UV gradients, and Light Masks into the active channel
+- 📦 Blend, swap, mirror, invert, normalize, and pack data across RGBA channels
+- 🎛️ Adjust channels with Levels, HSV, and Blur with live preview
+- 🎨 Store, load, and remove reusable channel color presets
+- 🎲 Randomize channels by connected mesh, UV island, material, sharp edge, or angle island
+- 🔁 Convert and transfer Color Attribute data between images, vertex groups, and mesh objects
+- 🧩 Work with both Face Corner and Vertex color attribute domains
 
 ---
 
@@ -56,13 +65,23 @@
 
 ### 6. 📦 Channel Packing and Channel Operations
 
-- Provides channel copy, channel swap, current channel invert, and normalize tools. You can quickly organize R / G / B / A data and pack masks from different sources into the same Vertex Color / Color Attribute.
+- Channel Operations provides Blend, Swap, and Mirror modes for organizing and packing data across R / G / B / A channels.
 
-- Suitable for export to game engines, material systems, or later texture conversion workflows.
+- Blend supports Replace, Multiply, Add, Subtract, and Overlay modes with adjustable strength. Mirror can copy the active channel across the local X, Y, or Z axis with configurable direction and tolerance.
+
+- Suitable for packing masks for game engines, material systems, and texture conversion workflows.
 
 <img width="812" height="540" alt="Channel Packing and Channel Operations" src="https://github.com/user-attachments/assets/52e7b3c2-62d6-4203-a828-97732cb836d6" />
 
-### 7. 🎲 Channel Randomization
+### 7. 🎛️ Channel Adjustments
+
+- Adjust the active channel with Levels, HSV, or Blur while previewing the result in real time.
+
+- Invert and Normalize are also available as quick channel operations. Large meshes use deferred preview updates to keep parameter adjustments responsive.
+- <img width="700" height="400" alt="Hsv" src="https://github.com/user-attachments/assets/ff627a53-dfad-4e30-8c17-6058766173e2" />
+
+
+### 8. 🎲 Channel Randomization
 
 - Writes random values into the current RGB / R / G / B / A channel, with support for grouping by Connected Mesh, UV Island, Material, Sharp Edge, and Angle Island.
 
@@ -70,9 +89,11 @@
 
 <img width="812" height="540" alt="Random" src="https://github.com/user-attachments/assets/3b4b0e41-2e85-4020-968d-7b2be5b41afd" />
 
-### 8. 🔁 Image / Weight / Channel Conversion
+### 9. 🔁 Image, Weights, and Object Transfer
 
-- Convert data bidirectionally between Image, Vertex Group Weights, and Vertex Color channels. You can read or write RGB / R / G / B / A as a data bridge between images, weights, and vertex color channels.
+- Convert data bidirectionally between images, vertex group weights, and Color Attribute channels.
+
+- Transfer the active channel between the current mesh and another mesh using matching topology or nearest-surface sampling, with an optional maximum distance.
 
 ---
 
