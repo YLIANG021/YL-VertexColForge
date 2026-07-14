@@ -9,8 +9,8 @@ YL VertexColForge makes Color Attribute channel editing simple: preview, paint, 
 - 🎯 Pick a channel value on the mesh, drag to adjust tolerance, and select matching areas
 - 🌈 Draw Color Ramp gradients, UV gradients, and Light Masks into the active channel
 - 📦 Blend, swap, mirror, invert, normalize, and pack data across RGBA channels
-- 🎛️ Adjust channels with Levels, HSV, and Blur with live preview
-- 🎨 Store, load, and remove reusable channel color presets
+- 🎛️ Adjust channels with Levels, HSV, and Blur with live preview *(New in v1.2.0)*
+- 🎨 Store, load, and remove reusable channel color presets *(New in v1.2.0)*
 - 🎲 Randomize channels by connected mesh, UV island, material, sharp edge, or angle island
 - 🔁 Convert and transfer Color Attribute data between images, vertex groups, and mesh objects
 - 🧩 Work with both Face Corner and Vertex color attribute domains
@@ -73,7 +73,7 @@ YL VertexColForge makes Color Attribute channel editing simple: preview, paint, 
 
 <img width="812" height="540" alt="Channel Packing and Channel Operations" src="https://github.com/user-attachments/assets/52e7b3c2-62d6-4203-a828-97732cb836d6" />
 
-### 7. 🎛️ Channel Adjustments
+### 7. 🎛️ Channel Adjustments *(New in v1.2.0)*
 
 - Adjust the active channel with Levels, HSV, or Blur while previewing the result in real time.
 
@@ -91,9 +91,11 @@ YL VertexColForge makes Color Attribute channel editing simple: preview, paint, 
 
 ### 9. 🔁 Image, Weights, and Object Transfer
 
-- Convert data bidirectionally between images, vertex group weights, and Color Attribute channels.
+- Convert data bidirectionally between images, vertex group weights, and two different objects
 
-- Transfer the active channel between the current mesh and another mesh using matching topology or nearest-surface sampling, with an optional maximum distance.
+- Transfer the active channel between the current mesh and another mesh using matching topology or nearest-surface sampling, with an optional maximum distance. *(New in v1.2.0)*
+- 
+<img width="1381" height="366" alt="QQ20260714-225133" src="https://github.com/user-attachments/assets/8c52a376-928e-48e8-ac77-d6c1ac3d9b0d" />
 
 ---
 
